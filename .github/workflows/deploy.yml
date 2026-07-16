@@ -1,0 +1,45 @@
+name: Deploy sparkbook
+
+# 前端托管在 CloudStudio（国内直连）；本工作流只负责把后端 API 部署到腾讯云 SCF。
+# push main 自动触发：打包 scf/ → UpdateFunctionCode → 健康检查。
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deploy-scf:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: scf
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Tencent Cloud SCF SDK (for deploy only)
+        run: pip install tencentcloud-sdk-python-scf
+
+      - name: Deploy to SCF
+        env:
+          TENCENT_SECRET_ID: ${{ secrets.TENCENT_SECRET_ID }}
+          TENCENT_SECRET_KEY: ${{ secrets.TENCENT_SECRET_KEY }}
+        run: python deploy_scf.py
+
+      - name: Health check
+        run: |
+          sleep 5
+          URL=$(python -c "import json; cfg=json.load(open('.scf-deploy.json')); print(cfg.get('access_url',''))")
+          if [ -n "$URL" ]; then
+            echo "Checking $URL/api/health"
+            curl -sf -o /dev/null -w "HTTP %{http_code}\n" "$URL/api/health" || echo " (may need warm-up)"
+          else
+            echo "access_url not set in .scf-deploy.json; skip health check"
+          fi
