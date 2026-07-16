@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>我的记事本</title>
+  <link rel="stylesheet" href="assets/styles.css" />
+</head>
+<body>
+
+  <!-- 解锁 / 创建 -->
+  <div id="unlock" class="unlock" hidden>
+    <div class="unlock-card">
+      <div class="unlock-logo">📓</div>
+      <h1 id="unlock-title">解锁记事本</h1>
+      <p id="unlock-sub" class="unlock-sub"></p>
+      <input id="pw" type="password" placeholder="主密码" autocomplete="off" />
+      <button id="unlock-btn" class="btn-primary">解锁</button>
+      <p class="unlock-foot">数据在浏览器内加密，服务器只见密文（原型用 localStorage 模拟云端）。</p>
+      <button type="button" class="link-btn" data-action="reset-data">重置并清空数据</button>
+    </div>
+  </div>
+
+  <!-- 主应用 -->
+  <div id="app" hidden>
+    <header class="topbar">
+      <div class="brand">📓 我的记事本</div>
+      <div class="topbar-right">
+        <input id="search" class="search" type="text" placeholder="搜索全部内容…" />
+        <button class="btn" data-action="new-entry">+ 新建</button>
+        <button class="btn" data-action="export">导出备份</button>
+        <button class="btn ghost" data-action="lock">锁定</button>
+      </div>
+    </header>
+
+    <div class="body">
+      <aside class="sidebar">
+        <div id="sidebar-list" class="sidebar-list"></div>
+        <div id="cat-empty" class="cat-empty" hidden>
+          还没有分类。<button type="button" class="link-btn" data-action="restore-cats">恢复默认分类</button>
+        </div>
+        <button class="cat-add" data-action="add-cat">+ 新建分类</button>
+      </aside>
+
+      <main class="main">
+        <div class="view-head">
+          <h2 id="view-title">全部</h2>
+          <label id="hide-done-wrap" class="hide-done" hidden>
+            <input type="checkbox" id="hide-done" data-action="toggle-hide-done" /> 隐藏已完成
+          </label>
+        </div>
+
+        <div id="summary" class="summary" hidden></div>
+        <div id="entries" class="entries"></div>
+      </main>
+    </div>
+  </div>
+
+  <!-- 新建 / 编辑 弹窗 -->
+  <div id="modal" class="modal" hidden>
+    <div class="modal-card">
+      <h3 id="modal-title">新建</h3>
+      <div class="form-row">
+        <label>类型</label>
+        <select id="m-type">
+          <option value="note">杂项</option>
+          <option value="task">任务</option>
+          <option value="ledger">账本</option>
+          <option value="meeting">会议</option>
+        </select>
+      </div>
+      <div class="form-row">
+        <label>分类</label>
+        <div id="m-cat" class="cat-pills"></div>
+        <button type="button" class="btn mini-btn" data-action="modal-add-cat">+ 新分类</button>
+      </div>
+      <div class="form-row">
+        <label>标题</label>
+        <input id="m-title" type="text" placeholder="一句话标题" />
+      </div>
+      <div class="form-row">
+        <label>内容</label>
+        <textarea id="m-content" rows="4" placeholder="正文（会议记录、杂项、备注…）"></textarea>
+      </div>
+
+      <div id="task-fields" class="type-fields" hidden>
+        <label class="inline"><input type="checkbox" id="m-done" /> 已完成</label>
+      </div>
+
+      <div id="ledger-fields" class="type-fields" hidden>
+        <div class="form-row">
+          <label>方向</label>
+          <select id="m-direction">
+            <option value="expense">支出</option>
+            <option value="income">收入</option>
+          </select>
+        </div>
+        <div class="form-row">
+          <label>金额</label>
+          <input id="m-amount" type="number" step="0.01" min="0" placeholder="0.00" />
+        </div>
+        <div class="form-row">
+          <label>备注</label>
+          <input id="m-note" type="text" placeholder="如：滴滴 / 工资" />
+        </div>
+      </div>
+
+      <div class="modal-actions">
+        <button class="btn ghost" data-action="modal-cancel">取消</button>
+        <button class="btn-primary" data-action="modal-save">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast"></div>
+
+  <script src="assets/crypto.js"></script>
+  <script src="assets/seed.js"></script>
+  <script src="assets/store.js"></script>
+  <script src="assets/app.js"></script>
+</body>
+</html>

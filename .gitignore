@@ -1,0 +1,15 @@
+# Python / SCF 打包产物
+vendor/
+deploy.zip
+__pycache__/
+*.pyc
+.venv/
+
+# 本地临时/测试
+_test_*.mjs
+_procscan.txt
+*.log
+
+# 系统
+.DS_Store
+Thumbs.db
