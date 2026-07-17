@@ -6,6 +6,7 @@ sparkbook — SCF Web 函数后端（纯 API 服务）
   - /api/ai          调 DeepSeek 生成/进化日报与会议纪要（开启 prompt caching）
   - /api/asr/presign 下发 COS 预签名 PUT URL，供浏览器直传 M4A（不暴露密钥）
   - /api/asr/transcribe 用腾讯云 ASR 对临时音频转写，返回文本并清理
+  - /api/vault/presign 下发 COS 预签名 URL，供浏览器读写整库加密对象 vaults/{vid}.enc
 
 零知识边界：SCF 永不接触笔记明文/主密码。它只代理 LLM 与 ASR，
 所有敏感数据在浏览器端加解密。ASR 的腾讯云密钥复用 COS 同一套密钥。
@@ -156,6 +157,34 @@ def asr_presign():
     key = '{prefix}{uid}.{ext}'.format(prefix=ASR_TEMP_PREFIX, uid=uuid.uuid4().hex, ext=ext)
     url = cos_presign_url('put', key, expired=3600)
     return jsonify({'code': 0, 'key': key, 'url': url, 'method': 'PUT'})
+
+
+# ------------------------- 加密库（vault）预签名 -------------------------
+# 整个用户加密库作为单个对象 vaults/{vid}.enc 读写。vid 由浏览器端
+# SHA-256(主密码) 派生，SCF 不接触明文/密码，仅对指定 key 下发预签名 URL。
+VAULT_PREFIX = 'vaults/'
+
+
+@app.route('/api/vault/presign', methods=['POST', 'OPTIONS'])
+def vault_presign():
+    if request.method == 'OPTIONS':
+        return ('', 204)
+    if not authorized():
+        return auth_fail()
+    if not (COS_SECRET_ID and COS_SECRET_KEY and COS_BUCKET):
+        return jsonify({'code': 2, 'msg': 'SCF 未配置 COS 环境变量'}), 500
+    d = request.get_json(force=True, silent=True) or {}
+    vid = d.get('vid', '')
+    action = (d.get('action') or 'put').lower()
+    if not vid or len(vid) != 64 or any(c not in '0123456789abcdef' for c in vid):
+        return jsonify({'code': 2, 'msg': '无效的 vid'}), 400
+    if action not in ('get', 'put'):
+        return jsonify({'code': 2, 'msg': 'action 仅支持 get/put'}), 400
+    key = VAULT_PREFIX + vid + '.enc'
+    # 写库给 1 小时预签名（足够上传）；读库给 10 分钟
+    expired = 3600 if action == 'put' else 600
+    url = cos_presign_url(action, key, expired=expired)
+    return jsonify({'code': 0, 'key': key, 'url': url, 'method': action.upper()})
 
 
 # ------------------------- 腾讯云 ASR（录音文件识别） -------------------------

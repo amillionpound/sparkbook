@@ -1,411 +1,332 @@
-// app.js —— 记事本原型 UI 逻辑（原生 JS，无框架）
+/* Sparkbook UI 控制器 */
 (function () {
   'use strict';
+  const store = new SparkStore();
+  const $ = sel => document.querySelector(sel);
+  const TYPES = window.SparkTypes;
+  const TYPE_ORDER = window.SparkTypeOrder;
 
-  const { TYPES, fmtMoney } = window.StoreConst;
-  const store = new Store();
-  const state = { cat: null, q: '', hideDone: false, editing: null, modalCat: null };
-
-  const $ = (s, r = document) => r.querySelector(s);
-  const appEl = $('#app');
-  const unlockEl = $('#unlock');
-  const modalEl = $('#modal');
+  let cur = { type: 'all', cat: '', q: '' };
+  let editingId = null;
+  let editorType = 'misc';
 
   function fmtDate(iso) {
-    try {
-      return new Date(iso).toISOString().slice(0, 10);
-    } catch (e) {
-      return '';
-    }
+    if (!iso) return '';
+    const d = new Date(iso);
+    if (isNaN(d)) return iso;
+    const p = n => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
   }
-
-  let toastTimer = null;
+  function esc(s) {
+    return (s || '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  }
   function toast(msg) {
     const t = $('#toast');
-    t.textContent = msg;
-    t.classList.add('show');
-    clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => t.classList.remove('show'), 2200);
+    t.textContent = msg; t.classList.remove('hidden');
+    clearTimeout(toast._t); toast._t = setTimeout(() => t.classList.add('hidden'), 1800);
   }
 
-  // 页面内对话框（替代被沙箱拦截的 window.prompt / confirm）
-  function uiPrompt(title, defaultVal) {
-    return new Promise((resolve) => {
-      const wrap = document.createElement('div');
-      wrap.className = 'modal';
-      wrap.innerHTML = `
-        <div class="modal-card small">
-          <h3>${escapeHtml(title)}</h3>
-          <input class="dlg-input" type="text" value="${escapeHtml(defaultVal || '')}" />
-          <div class="modal-actions">
-            <button class="btn ghost dlg-cancel">取消</button>
-            <button class="btn-primary inline-btn dlg-ok">确定</button>
-          </div>
-        </div>`;
-      document.body.appendChild(wrap);
-      const input = wrap.querySelector('.dlg-input');
-      input.focus();
-      input.select();
-      const done = (val) => { wrap.remove(); resolve(val); };
-      wrap.querySelector('.dlg-ok').onclick = () => done(input.value.trim());
-      wrap.querySelector('.dlg-cancel').onclick = () => done(null);
-      input.onkeydown = (e) => {
-        if (e.key === 'Enter') done(input.value.trim());
-        if (e.key === 'Escape') done(null);
-      };
-      wrap.onclick = (e) => { if (e.target === wrap) done(null); };
-    });
-  }
-
-  function uiConfirm(title) {
-    return new Promise((resolve) => {
-      const wrap = document.createElement('div');
-      wrap.className = 'modal';
-      wrap.innerHTML = `
-        <div class="modal-card small">
-          <p class="dlg-msg">${escapeHtml(title)}</p>
-          <div class="modal-actions">
-            <button class="btn ghost dlg-cancel">取消</button>
-            <button class="btn-primary inline-btn danger dlg-ok">确定</button>
-          </div>
-        </div>`;
-      document.body.appendChild(wrap);
-      const done = (val) => { wrap.remove(); resolve(val); };
-      wrap.querySelector('.dlg-ok').onclick = () => done(true);
-      wrap.querySelector('.dlg-cancel').onclick = () => done(false);
-      wrap.onclick = (e) => { if (e.target === wrap) done(false); };
-    });
-  }
-
-  // ============ 解锁 / 创建 ============
-  async function init() {
-    if (await store.resumeSession()) {
-      renderApp();
-      return;
-    }
-    showUnlock();
-  }
-
-  function showUnlock() {
-    appEl.hidden = true;
-    unlockEl.hidden = false;
-    const setup = !store.isSetup();
-    $('#unlock-title').textContent = setup ? '创建你的记事本' : '解锁记事本';
-    $('#unlock-sub').textContent = setup
-      ? '设置主密码。明文只在本地加密保存，忘记密码 = 数据不可恢复，请牢记。'
-      : '输入主密码以解密本地数据。';
-    $('#unlock-btn').textContent = setup ? '创建' : '解锁';
-    $('#pw').value = '';
-    $('#pw').focus();
-  }
-
-  async function doUnlock() {
-    const pw = $('#pw').value;
-    if (!pw) return toast('请输入密码');
+  // ---------- 解锁 ----------
+  async function doUnlock(pw, remember) {
     try {
-      if (!store.isSetup()) await store.setup(pw);
-      else await store.unlock(pw);
-      unlockEl.hidden = true;
-      appEl.hidden = false;
-      renderApp();
-    } catch (err) {
-      toast('密码错误，无法解密');
+      await store.unlock(pw, { remember });
+      $('#lock-screen').classList.add('hidden');
+      $('#app').classList.remove('hidden');
+      afterUnlock();
+    } catch (e) {
+      $('#lock-error').textContent = e.message || '解锁失败';
+    }
+  }
+  function afterUnlock() {
+    renderTypeNav(); renderCats(); renderList(); updateBadge();
+  }
+  function updateBadge() {
+    const b = $('#sync-badge');
+    b.className = 'badge ' + (store.mode === 'cos' ? 'cos' : 'local');
+    b.textContent = store.mode === 'cos' ? '云端同步' : '本地模式';
+  }
+  async function sync() {
+    try {
+      const mode = await store.save();
+      updateBadge();
+      toast(mode === 'cos' ? '已同步至云端' : '已存本地');
+    } catch (e) {
+      toast('保存失败：' + (e.message || e));
     }
   }
 
-  function lock() {
-    store.lock();
-    showUnlock();
+  // ---------- 侧栏 ----------
+  function renderTypeNav() {
+    const nav = $('#type-nav');
+    const items = [{ key: 'all', label: '全部', icon: '📚' }]
+      .concat(TYPE_ORDER.map(k => ({ key: k, label: TYPES[k].label, icon: TYPES[k].icon })));
+    nav.innerHTML = items.map(it =>
+      `<button data-type="${it.key}" class="${cur.type === it.key ? 'active' : ''}">${it.icon} ${it.label}</button>`
+    ).join('');
+    nav.querySelectorAll('button').forEach(b =>
+      b.onclick = () => { cur.type = b.dataset.type; renderTypeNav(); renderList(); });
   }
-
-  // ============ 渲染 ============
-  function renderApp() {
-    renderSidebar();
-    renderMain();
-  }
-
-  function renderSidebar() {
-    const nb = store.notebook;
-    const allCount = nb.entries.length;
-    let html = `
-      <div class="cat-item ${state.cat === null ? 'active' : ''}" data-action="select-cat" data-id="">
-        <span class="dot" style="background:#475569"></span>
-        <span class="cat-name">全部</span>
-        <span class="cat-count">${allCount}</span>
-      </div>`;
-    nb.categories.forEach((c) => {
-      const cnt = nb.entries.filter((e) => e.categoryId === c.id).length;
-      html += `
-        <div class="cat-item ${state.cat === c.id ? 'active' : ''}" data-action="select-cat" data-id="${c.id}">
-          <span class="dot" style="background:${c.color}"></span>
-          <span class="cat-name">${escapeHtml(c.name)}</span>
-          <span class="cat-count">${cnt}</span>
-          <span class="cat-ops">
-            <button data-action="edit-cat" data-id="${c.id}" title="重命名">✎</button>
-            <button data-action="del-cat" data-id="${c.id}" title="删除分类">✕</button>
-          </span>
-        </div>`;
+  function renderCats() {
+    const box = $('#cat-list');
+    const cats = store.categories();
+    let html = `<span class="cat-pill ${cur.cat === '' ? 'active' : ''}" data-cat="">全部</span>`;
+    html += cats.map(c =>
+      `<span class="cat-pill ${cur.cat === c ? 'active' : ''}" data-cat="${esc(c)}">${esc(c)}<span class="x" data-x="${esc(c)}">✕</span></span>`
+    ).join('');
+    box.innerHTML = html;
+    box.querySelectorAll('.cat-pill').forEach(p => {
+      p.onclick = (e) => {
+        if (e.target.dataset.x) return;
+        cur.cat = p.dataset.cat; renderCats(); renderList();
+      };
     });
-    $('#sidebar-list').innerHTML = html;
-    $('#cat-empty').hidden = nb.categories.length > 0;
+    box.querySelectorAll('.x').forEach(x => {
+      x.onclick = (e) => {
+        e.stopPropagation();
+        const name = x.dataset.x;
+        if (confirm(`删除分类「${name}」？该分类下的条目将变为未分类。`)) {
+          store.removeCategory(name);
+          if (cur.cat === name) cur.cat = '';
+          renderCats(); renderList(); sync();
+        }
+      };
+    });
   }
 
-  function renderMain() {
-    const nb = store.notebook;
-    const title = state.cat ? (nb.categories.find((c) => c.id === state.cat) || {}).name : '全部';
-    $('#view-title').textContent = title;
-
-    // 当前列表
-    let list = store.search(state.q, state.cat);
-    const hasTask = list.some((e) => e.type === 'task');
-    if (state.hideDone) list = list.filter((e) => !(e.type === 'task' && e.done));
-    $('#hide-done-wrap').hidden = !hasTask;
-
-    // 账本汇总
-    const sum = store.ledgerSummary(list);
-    const summaryEl = $('#summary');
-    if (sum.count > 0) {
-      const byCat = Object.entries(sum.byCat)
-        .map(([k, v]) => `<span class="mini">${escapeHtml(k)} ${v >= 0 ? '+' : '-'}${fmtMoney(Math.abs(v)).slice(1)}</span>`)
-        .join('');
-      summaryEl.hidden = false;
-      summaryEl.innerHTML = `
-        <div class="sum-grid">
-          <div><div class="sum-label">收入</div><div class="sum-val inc">+${fmtMoney(sum.income).slice(1)}</div></div>
-          <div><div class="sum-label">支出</div><div class="sum-val exp">-${fmtMoney(sum.expense).slice(1)}</div></div>
-          <div><div class="sum-label">结余</div><div class="sum-val bal">${fmtMoney(sum.balance)}</div></div>
-        </div>
-        <div class="sum-bycat">${byCat}</div>`;
-    } else {
-      summaryEl.hidden = true;
-    }
-
-    if (list.length === 0) {
-      $('#entries').innerHTML = `<div class="empty">这里还没有内容，点右上角「+ 新建」记一笔吧。</div>`;
-      return;
-    }
-    $('#entries').innerHTML = list.map(renderEntry).join('');
-  }
-
-  function renderEntry(e) {
-    const t = TYPES[e.type];
-    let extra = '';
+  // ---------- 列表 ----------
+  function entrySummary(e) {
     if (e.type === 'ledger') {
-      const sign = e.direction === 'income' ? '+' : '-';
-      const cls = e.direction === 'income' ? 'inc' : 'exp';
-      extra = `<div class="ledger-amt ${cls}">${sign}${fmtMoney(e.amount).slice(1)} ${e.note ? '· ' + escapeHtml(e.note) : ''}</div>`;
+      const a = (Number(e.amount) || 0).toFixed(2);
+      const cls = e.direction === 'in' ? 'amt-in' : 'amt-out';
+      const sign = e.direction === 'in' ? '+' : '-';
+      return `<span class="${cls}">¥${sign}${a}</span>` + (e.body ? ' · ' + esc(e.body) : '');
     }
-    const doneCls = e.type === 'task' && e.done ? ' done' : '';
-    const checkbox = e.type === 'task'
-      ? `<button class="task-check ${e.done ? 'checked' : ''}" data-action="toggle-task" data-id="${e.id}" title="标记完成">${e.done ? '✓' : ''}</button>`
-      : '';
-    return `
-      <div class="entry ${doneCls}" data-id="${e.id}">
-        ${checkbox}
-        <div class="entry-body">
-          <div class="entry-head">
-            <span class="badge" style="background:${t.color}">${t.label}</span>
-            <span class="entry-title">${escapeHtml(e.title || '(无标题)')}</span>
-            <span class="entry-date">${fmtDate(e.createdAt)}</span>
-          </div>
-          ${e.content ? `<div class="entry-content">${escapeHtml(e.content)}</div>` : ''}
-          ${extra}
-        </div>
-        <div class="entry-ops">
-          <button data-action="edit-entry" data-id="${e.id}" title="编辑">✎</button>
-          <button data-action="del-entry" data-id="${e.id}" title="删除">✕</button>
-        </div>
-      </div>`;
+    if (e.type === 'task') {
+      return esc(e.title) + (e.dueDate ? ` · 截止 ${esc(e.dueDate)}` : '') + (e.done ? ' ✓' : '');
+    }
+    if (e.type === 'meeting') {
+      return esc(e.title) + (e.meetingDate ? ` · ${esc(e.meetingDate)}` : '');
+    }
+    return esc(e.body || e.title || '');
   }
-
-  function escapeHtml(s) {
-    return String(s == null ? '' : s)
-      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-  }
-
-  // ============ 弹窗：新建 / 编辑 ============
-  function renderCatPills(selectedId) {
-    const nb = store.notebook;
-    const box = $('#m-cat');
-    if (!nb.categories.length) {
-      box.innerHTML = '<span class="cat-pill-empty">（请点右侧「+ 新分类」）</span>';
-      state.modalCat = null;
+  function renderList() {
+    const list = $('#entry-list');
+    const items = store.filter({ type: cur.type, category: cur.cat, q: cur.q });
+    const typeLabel = cur.type === 'all' ? '全部' : TYPES[cur.type].label;
+    $('#view-title').textContent = cur.cat ? `${typeLabel} · ${cur.cat}` : typeLabel;
+    $('#view-count').textContent = `${items.length} 条`;
+    if (!items.length) {
+      list.innerHTML = `<div class="empty">还没有记录，点右下角 ＋ 新增一条吧</div>`;
       return;
     }
-    const sel = selectedId || nb.categories[0].id;
-    box.innerHTML = nb.categories
-      .map((c) => `<button type="button" class="cat-pill ${c.id === sel ? 'sel' : ''}" data-action="pick-cat" data-cat="${c.id}" style="--pc:${c.color}">${escapeHtml(c.name)}</button>`)
-      .join('');
-    state.modalCat = sel;
+    list.innerHTML = items.map(e => {
+      const edited = e.updated && e.created && e.updated > e.created;
+      const catHtml = e.category ? `<span class="entry-cat">#${esc(e.category)}</span>` : '';
+      const editedHtml = edited ? `<span class="entry-edited">已编辑</span>` : '';
+      let actions = `<div class="entry-actions">
+        <button class="mini-btn" data-edit="${e.id}">✏️</button>
+        ${e.type === 'inspiration' ? `<button class="mini-btn" data-conv="${e.id}" title="转为普通记录">🔀</button>` : ''}
+        <button class="mini-btn" data-del="${e.id}">🗑</button>
+      </div>`;
+      return `<div class="entry ${e.type === 'task' && e.done ? 'done' : ''}" data-id="${e.id}">
+        <div class="entry-top">
+          <span class="entry-type">${TYPES[e.type].icon} ${TYPES[e.type].label}</span>
+          ${catHtml} ${editedHtml}
+        </div>
+        <div class="entry-body">${entrySummary(e)}</div>
+        <div class="entry-meta"><span>创建 ${fmtDate(e.created)}</span>${edited ? `<span>修改 ${fmtDate(e.updated)}</span>` : ''}</div>
+        ${actions}
+      </div>`;
+    }).join('');
+    list.querySelectorAll('[data-edit]').forEach(b => b.onclick = (ev) => { ev.stopPropagation(); openEditor(b.dataset.edit); });
+    list.querySelectorAll('[data-del]').forEach(b => b.onclick = (ev) => {
+      ev.stopPropagation();
+      if (confirm('确定删除这条记录？')) { store.deleteEntry(b.dataset.del); renderList(); sync(); }
+    });
+    list.querySelectorAll('[data-conv]').forEach(b => b.onclick = (ev) => { ev.stopPropagation(); convertFlow(b.dataset.conv); });
   }
 
-  function openModal(entryId) {
-    state.editing = entryId || null;
-    const nb = store.notebook;
-    const e = entryId ? nb.entries.find((x) => x.id === entryId) : null;
-
-    renderCatPills(e ? e.categoryId : null);
-
-    $('#m-type').value = e ? e.type : 'note';
-    $('#m-title').value = e ? e.title || '' : '';
-    $('#m-content').value = e ? e.content || '' : '';
-    $('#m-done').checked = e ? !!e.done : false;
-    $('#m-amount').value = e && e.type === 'ledger' ? e.amount : '';
-    $('#m-direction').value = e && e.type === 'ledger' ? e.direction : 'expense';
-    $('#m-note').value = e && e.type === 'ledger' ? e.note || '' : '';
-
-    $('#modal-title').textContent = e ? '编辑' : '新建';
-    toggleTypeFields();
-    modalEl.hidden = false;
-    $('#m-title').focus();
-  }
-
-  function closeModal() {
-    modalEl.hidden = true;
-    state.editing = null;
-  }
-
-  function toggleTypeFields() {
-    const type = $('#m-type').value;
-    $('#task-fields').hidden = type !== 'task';
-    $('#ledger-fields').hidden = type !== 'ledger';
-  }
-
-  async function saveModal() {
-    const type = $('#m-type').value;
-    const title = $('#m-title').value.trim();
-    const content = $('#m-content').value.trim();
-    const categoryId = state.modalCat;
-    if (!title && !content) return toast('标题或内容至少填一项');
-    if (!categoryId) return toast('请先创建一个分类');
-
-    const data = { type, title, content, categoryId };
-    if (type === 'task') data.done = $('#m-done').checked;
-    if (type === 'ledger') {
-      const amt = parseFloat($('#m-amount').value);
-      if (!Number.isFinite(amt) || amt <= 0) return toast('请输入有效金额');
-      data.amount = amt;
-      data.direction = $('#m-direction').value;
-      data.note = $('#m-note').value.trim();
+  // ---------- 编辑/新增 弹层 ----------
+  function field(label, html) { return `<div class="field"><label>${label}</label>${html}</div>`; }
+  function formHtml(type, e) {
+    e = e || {};
+    const catOpts = ['<option value="">（未分类）</option>']
+      .concat(store.categories().map(c => `<option value="${esc(c)}" ${e.category === c ? 'selected' : ''}>${esc(c)}</option>`));
+    let h = `<div class="field"><label>类型</label><select id="f-type">` +
+      TYPE_ORDER.map(k => `<option value="${k}" ${type === k ? 'selected' : ''}>${TYPES[k].icon} ${TYPES[k].label}</option>`).join('') +
+      `</select></div>`;
+    h += field('分类', `<select id="f-cat">${catOpts.join('')}</select>`);
+    if (type === 'task') {
+      h += field('标题', `<input id="f-title" value="${esc(e.title || '')}" />`);
+      h += field('截止日期', `<input id="f-due" type="date" value="${esc(e.dueDate || '')}" />`);
+      h += field('完成', `<label><input id="f-done" type="checkbox" ${e.done ? 'checked' : ''}/> 已勾选划去</label>`);
+      h += field('备注', `<textarea id="f-body">${esc(e.body || '')}</textarea>`);
+    } else if (type === 'meeting') {
+      h += field('标题', `<input id="f-title" value="${esc(e.title || '')}" />`);
+      h += field('会议日期', `<input id="f-mdate" type="date" value="${esc(e.meetingDate || '')}" />`);
+      h += field('纪要 / 正文', `<textarea id="f-body">${esc(e.body || '')}</textarea>`);
+    } else if (type === 'ledger') {
+      h += field('金额 (¥)', `<input id="f-amt" type="number" step="0.01" value="${e.amount != null ? e.amount : ''}" />`);
+      h += field('方向', `<div class="seg" id="f-dir">
+        <button type="button" data-d="out" class="${e.direction !== 'in' ? 'on' : ''}">支出</button>
+        <button type="button" data-d="in" class="${e.direction === 'in' ? 'on' : ''}">收入</button></div>`);
+      h += field('日期', `<input id="f-ldate" type="date" value="${esc((e.created || '').slice(0, 10))}" />`);
+      h += field('备注', `<input id="f-body" value="${esc(e.body || '')}" />`);
+    } else if (type === 'inspiration') {
+      h += field('灵感内容', `<textarea id="f-body">${esc(e.body || '')}</textarea>`);
+    } else { // misc
+      h += field('内容', `<textarea id="f-body">${esc(e.body || '')}</textarea>`);
     }
-
-    if (state.editing) store.updateEntry(state.editing, data);
-    else store.addEntry(data);
-    await store.save();
-    closeModal();
-    renderApp();
+    return h;
+  }
+  function openEditor(idOrNull, defaultType) {
+    editingId = idOrNull;
+    const existing = idOrNull ? store.get(idOrNull) : null;
+    editorType = defaultType || (existing ? existing.type : (cur.type !== 'all' ? cur.type : 'misc'));
+    $('#editor-title').textContent = existing ? '编辑' : '新增';
+    $('#editor-body').innerHTML = formHtml(editorType, existing);
+    // 类型切换
+    $('#f-type').onchange = () => { editorType = $('#f-type').value; openEditor(idOrNull, editorType); };
+    // 收支分段
+    const dir = $('#f-dir');
+    if (dir) dir.querySelectorAll('button').forEach(b => b.onclick = () => {
+      dir.querySelectorAll('button').forEach(x => x.classList.remove('on'));
+      b.classList.add('on');
+    });
+    // 时间戳
+    if (existing) {
+      $('#editor-stamps').textContent = `创建 ${fmtDate(existing.created)} · 修改 ${fmtDate(existing.updated)}`;
+    } else {
+      $('#editor-stamps').textContent = '';
+    }
+    $('#editor').classList.remove('hidden');
+    const first = $('#editor-body').querySelector('input,textarea,select');
+    if (first) setTimeout(() => first.focus(), 50);
+  }
+  function collectForm() {
+    const type = $('#f-type').value;
+    const cat = $('#f-cat').value;
+    const body = $('#f-body') ? $('#f-body').value : '';
+    const patch = { type, category: cat, body };
+    if (type === 'task') {
+      patch.title = $('#f-title').value;
+      patch.dueDate = $('#f-due').value;
+      patch.done = $('#f-done').checked;
+    } else if (type === 'meeting') {
+      patch.title = $('#f-title').value;
+      patch.meetingDate = $('#f-mdate').value;
+    } else if (type === 'ledger') {
+      patch.amount = parseFloat($('#f-amt').value) || 0;
+      patch.direction = ($('#f-dir').querySelector('.on') || {}).dataset?.d || 'out';
+      const d = $('#f-ldate').value;
+      if (d && (!editingId)) patch.created = new Date(d + 'T00:00:00').toISOString();
+    } else if (type === 'inspiration') {
+      if (!editingId) patch.capturedAt = new Date().toISOString();
+    }
+    return patch;
+  }
+  async function saveEditor() {
+    const patch = collectForm();
+    if (editingId) store.updateEntry(editingId, patch);
+    else store.addEntry(patch);
+    $('#editor').classList.add('hidden');
+    renderList(); renderCats();
+    await sync();
   }
 
-  // ============ 事件委托 ============
-  document.addEventListener('click', async (ev) => {
-    const el = ev.target.closest('[data-action]');
-    if (!el) return;
-    const action = el.dataset.action;
-    const id = el.dataset.id;
-
-    switch (action) {
-      case 'select-cat':
-        state.cat = id || null;
-        renderApp();
-        break;
-      case 'edit-cat': {
-        const c = store.categoryById(id);
-        const name = await uiPrompt('重命名分类', c.name);
-        if (name) { store.updateCategory(id, name); await store.save(); renderApp(); }
-        break;
-      }
-      case 'del-cat': {
-        const c = store.categoryById(id);
-        if (await uiConfirm(`删除分类「${c.name}」？其中的条目也会一并删除。`)) {
-          store.deleteCategory(id);
-          if (state.cat === id) state.cat = null;
-          await store.save(); renderApp();
-        }
-        break;
-      }
-      case 'add-cat': {
-        const name = await uiPrompt('新分类名称', '');
-        if (name) {
-          const cat = store.addCategory(name);
-          await store.save();
-          state.cat = cat.id;
-          renderApp();
-          toast('已创建分类「' + cat.name + '」');
-        }
-        break;
-      }
-      case 'toggle-task':
-        store.toggleTask(id); await store.save(); renderApp();
-        break;
-      case 'edit-entry':
-        openModal(id);
-        break;
-      case 'del-entry': {
-        const e = store.notebook.entries.find((x) => x.id === id);
-        if (await uiConfirm(`删除「${(e && e.title) || '该条目'}」？`)) {
-          store.deleteEntry(id); await store.save(); renderApp();
-        }
-        break;
-      }
-      case 'pick-cat':
-        state.modalCat = id;
-        renderCatPills(state.modalCat);
-        break;
-      case 'modal-add-cat': {
-        const name = await uiPrompt('新分类名称', '');
-        if (name) {
-          const cat = store.addCategory(name);
-          await store.save();
-          renderSidebar();
-          renderCatPills(cat.id);
-          toast('已创建分类「' + cat.name + '」');
-        }
-        break;
-      }
-      case 'new-entry':
-        openModal(null);
-        break;
-      case 'modal-save':
-        await saveModal();
-        break;
-      case 'modal-cancel':
-        closeModal();
-        break;
-      case 'lock':
-        lock();
-        break;
-      case 'restore-cats': {
-        const added = store.restoreSeedCategories();
-        await store.save();
-        renderApp();
-        toast(added > 0 ? `已恢复 ${added} 个默认分类` : '默认分类已存在');
-        break;
-      }
-      case 'reset-data': {
-        const ok = await uiConfirm('确定清空全部数据并重置？此操作不可恢复（原型数据仅存于本机）。');
-        if (ok) {
-          Store.clearStorage();
-          location.reload();
-        }
-        break;
-      }
-      case 'export':
-        store.exportBackup();
-        toast('已导出加密备份文件');
-        break;
-      case 'toggle-hide-done':
-        state.hideDone = $('#hide-done').checked;
-        renderMain();
-        break;
+  // ---------- 灵感转普通记录 ----------
+  async function convertFlow(id) {
+    const e = store.get(id);
+    if (!e) return;
+    const target = prompt('转为哪种类型？输入：misc / task / ledger / meeting', 'misc');
+    if (!target || !TYPE_ORDER.includes(target)) return;
+    const extra = {};
+    if (target === 'task') extra.dueDate = prompt('截止日期（可空，格式 YYYY-MM-DD）', '') || '';
+    if (target === 'ledger') {
+      extra.amount = parseFloat(prompt('金额（¥）', '0')) || 0;
+      extra.direction = confirm('这是收入吗？确定=收入，取消=支出') ? 'in' : 'out';
     }
-  });
+    if (target === 'meeting') extra.meetingDate = prompt('会议日期（可空，格式 YYYY-MM-DD）', '') || '';
+    store.convertInspiration(id, target, extra);
+    renderList();
+    await sync();
+    toast('已转换为' + TYPES[target].label);
+  }
 
-  // 输入类事件
-  $('#pw').addEventListener('keydown', (e) => { if (e.key === 'Enter') doUnlock(); });
-  $('#unlock-btn').addEventListener('click', doUnlock);
-  $('#search').addEventListener('input', (e) => { state.q = e.target.value; renderMain(); });
-  $('#m-type').addEventListener('change', toggleTypeFields);
+  // ---------- 导出（基础版：当前列表 → Markdown / JSON） ----------
+  function exportText() {
+    const items = store.filter({ type: cur.type, category: cur.cat, q: cur.q });
+    let md = `# Sparkbook 导出（${fmtDate(new Date().toISOString())}）\n\n`;
+    let curT = '';
+    items.forEach(e => {
+      if (e.type !== curT) { curT = e.type; md += `\n## ${TYPES[e.type].label}\n`; }
+      const cat = e.category ? ` [${e.category}]` : '';
+      md += `- ${fmtDate(e.created)}${cat} ${entrySummary(e)}\n`;
+    });
+    $('#textout-area').value = md;
+    $('#textout').classList.remove('hidden');
+  }
 
-  init();
+  // ---------- 事件绑定 ----------
+  function bind() {
+    $('#unlock-btn').onclick = () => {
+      const pw = $('#password').value;
+      if (!pw) { $('#lock-error').textContent = '请输入主密码'; return; }
+      doUnlock(pw, true);
+    };
+    $('#password').addEventListener('keydown', e => { if (e.key === 'Enter') $('#unlock-btn').click(); });
+
+    $('#lock-btn').onclick = () => {
+      store.clearSession(); store.lock();
+      $('#app').classList.add('hidden'); $('#lock-screen').classList.remove('hidden');
+      $('#password').value = '';
+    };
+    $('#menu-toggle').onclick = () => $('#sidebar').classList.toggle('open');
+
+    $('#fab').onclick = () => openEditor(null);
+    $('#editor-save').onclick = saveEditor;
+    $('#editor-close').onclick = () => $('#editor').classList.add('hidden');
+    $('#editor-exit').onclick = () => {
+      const ta = $('#editor-body').querySelector('textarea');
+      if (ta && ta.value.trim()) {
+        if (confirm('框内有内容，直接退出将丢弃。点「确定」丢弃，点「取消」返回保存。')) $('#editor').classList.add('hidden');
+      } else $('#editor').classList.add('hidden');
+    };
+    $('#add-cat-btn').onclick = () => {
+      const name = prompt('新分类名称：');
+      if (name && store.addCategory(name)) { renderCats(); sync(); }
+    };
+    $('#search').addEventListener('input', e => { cur.q = e.target.value.trim(); renderList(); });
+
+    $('#textout-close').onclick = () => $('#textout').classList.add('hidden');
+    $('#textout-copy').onclick = () => {
+      const ta = $('#textout-area'); ta.select();
+      navigator.clipboard?.writeText(ta.value).then(() => toast('已复制'), () => toast('复制失败'));
+    };
+    $('#export-btn').onclick = exportText;
+    $('#daily-btn').onclick = () => toast('日报助手将在 P4 阶段接入');
+
+    // 快捷键 N 唤起新增（已解锁时）
+    document.addEventListener('keydown', e => {
+      if ($('#app').classList.contains('hidden')) return;
+      if (e.key === 'n' || e.key === 'N') {
+        if (document.activeElement && /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName)) return;
+        openEditor(null);
+      }
+      if (e.key === 'Escape' && !$('#editor').classList.contains('hidden')) {
+        $('#editor').classList.add('hidden');
+      }
+    });
+  }
+
+  // ---------- 启动 ----------
+  async function boot() {
+    bind();
+    if (store.canAutoUnlock()) {
+      const ok = await store.autoUnlock();
+      if (ok) { $('#lock-screen').classList.add('hidden'); $('#app').classList.remove('hidden'); afterUnlock(); return; }
+    }
+    $('#lock-screen').classList.remove('hidden');
+  }
+  boot();
 })();
