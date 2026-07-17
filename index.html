@@ -210,8 +210,11 @@
           <input id="rec-file" type="file" accept="audio/*,.mp3,.m4a,.wav,.flac,.ogg,.amr" />
         </div>
         <div class="field">
-          <label>已知背景（选填，转写更准确）— 如「和A厂商对接，我方为甲方；参会约3人」，不填则按录音推测</label>
-          <textarea id="rec-ctx" class="textout-area" placeholder="例：这是与XX厂商的需求对接会，我方是甲方，录音里约3人、分属厂商与行内两方。"></textarea>
+          <label>转写前可补充背景，让 AI 更准确（均选填、可不精确）</label>
+          <input id="rec-topic" placeholder="会议主题（可不精确，如：与XX厂商需求对接）" />
+          <input id="rec-self" placeholder="我的身份 / 是否发言（如：我方甲方；不确定自己是否发言）" />
+          <input id="rec-scale" placeholder="参会规模 / 立场（如：约3人，厂商+行内两方）" />
+          <textarea id="rec-ctx" class="textout-area" placeholder="其他补充（选填）"></textarea>
         </div>
         <div class="daily-row">
           <button id="rec-go" class="btn btn-primary">开始转写</button>
@@ -234,7 +237,7 @@
 
   <script src="assets/crypto.js?v=20260717m"></script>
   <script src="assets/store.js?v=20260717m"></script>
-  <script src="assets/app.js?v=20260717m"></script>
+  <script src="assets/app.js?v=20260718a"></script>
   <script>
     if ('serviceWorker' in navigator) {
       window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));

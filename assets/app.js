@@ -246,8 +246,11 @@
         <span id="f-rec-status" class="muted small"></span>
       </div>
       <div class="rec-ctx-wrap">
-        <label class="small muted">已知背景（选填，转写更准确）— 如「和A厂商对接，我方为甲方；参会约3人」</label>
-        <textarea id="f-rec-ctx" class="textout-area" placeholder="例：与XX厂商需求对接会，我方甲方，录音约3人分属厂商与行内两方。"></textarea>
+        <label class="small muted">转写前可补充背景，让 AI 更准确（均选填、可不精确）</label>
+        <input id="f-rec-topic" placeholder="会议主题（可不精确，如：与XX厂商需求对接）" />
+        <input id="f-rec-self" placeholder="我的身份 / 是否发言（如：我方甲方；不确定自己是否发言）" />
+        <input id="f-rec-scale" placeholder="参会规模 / 立场（如：约3人，厂商+行内两方）" />
+        <textarea id="f-rec-ctx" class="textout-area" placeholder="其他补充（选填）"></textarea>
       </div>`);
       h += field('纪要 / 正文', `<textarea id="f-body">${esc(e.body || '')}</textarea>`);
     } else if (type === 'ledger') {
@@ -303,7 +306,7 @@
           $('#f-rec-status').textContent = '云端转写中（可能需1-2分钟）…';
           const sp = store.styleProfile();
           const terms = (sp && sp.terms) ? sp.terms : [];
-          const ctx = ($('#f-rec-ctx') ? $('#f-rec-ctx').value : '') || '';
+          const ctx = recContext('f-');
           const res = await transcribeAudio(key, terms, ctx);
           const fill = res.summary || res.text;
           const ta = $('#f-body');
@@ -498,6 +501,19 @@
     if (d.code !== 0) throw new Error(d.msg || ('code ' + d.code));
     return d.key;
   }
+  // 把结构化背景字段拼成 context 文本喂给 AI（prefix 区分会议编辑器内嵌[f-]与独立弹层[]）
+  function recContext(prefix) {
+    const parts = [];
+    const topic = document.getElementById(prefix + 'rec-topic');
+    const self = document.getElementById(prefix + 'rec-self');
+    const scale = document.getElementById(prefix + 'rec-scale');
+    const extra = document.getElementById(prefix + 'rec-ctx');
+    if (topic && topic.value.trim()) parts.push('会议主题（用户自述，可能不精确，仅供参考）：' + topic.value.trim());
+    if (self && self.value.trim()) parts.push('我的身份/是否发言（用户自述，可据此标注用户立场）：' + self.value.trim());
+    if (scale && scale.value.trim()) parts.push('参会规模/立场（用户自述）：' + scale.value.trim());
+    if (extra && extra.value.trim()) parts.push(extra.value.trim());
+    return parts.join('\n');
+  }
   async function transcribeAudio(key, terms, context) {
     const body = { key, terms: terms || [] };
     if (context && context.trim()) body.context = context.trim();
@@ -519,7 +535,7 @@
       $('#rec-status').textContent = '云端转写中（可能需1-2分钟）…';
       const sp = store.styleProfile();
       const terms = (sp && sp.terms) ? sp.terms : [];
-      const ctx = ($('#rec-ctx') ? $('#rec-ctx').value : '') || '';
+      const ctx = recContext('');
       const res = await transcribeAudio(key, terms, ctx);
       const fill = res.summary || res.text;
       $('#rec-result').value = fill;
