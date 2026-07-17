@@ -20,6 +20,11 @@
   function esc(s) {
     return (s || '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
   }
+  function defaultDateTime() {
+    const d = new Date();
+    const p = n => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+  }
   function toast(msg) {
     const t = $('#toast');
     t.textContent = msg; t.classList.remove('hidden');
@@ -213,26 +218,24 @@
     h += field('分类', `<select id="f-cat">${catOpts.join('')}</select>`);
     if (type === 'task') {
       h += field('标题', `<input id="f-title" value="${esc(e.title || '')}" />`);
-      h += field('截止日期', `<input id="f-due" type="date" value="${esc(e.dueDate || '')}" />`);
+      h += field('截止时间', `<input id="f-due" placeholder="YYYY-MM-DD HH:mm" value="${esc(e.dueDate || defaultDateTime())}" />`);
       h += field('完成', `<label><input id="f-done" type="checkbox" ${e.done ? 'checked' : ''}/> 已勾选划去</label>`);
       h += field('备注', `<textarea id="f-body">${esc(e.body || '')}</textarea>`);
     } else if (type === 'meeting') {
       h += field('标题', `<input id="f-title" value="${esc(e.title || '')}" />`);
-      h += field('会议日期', `<input id="f-mdate" type="date" value="${esc(e.meetingDate || '')}" />`);
+      h += field('会议时间', `<input id="f-mdate" placeholder="YYYY-MM-DD HH:mm" value="${esc(e.meetingDate || defaultDateTime())}" />`);
       h += field('纪要 / 正文', `<textarea id="f-body">${esc(e.body || '')}</textarea>`);
     } else if (type === 'ledger') {
-      // 账本：日期+时间均手输（不依赖控件）；新建默认当前时刻，编辑显示已保存时刻
+      // 账本：日期+时间合并为单个文本框（不依赖控件）；新建默认当前时刻，编辑显示已保存时刻
       const p2 = n => String(n).padStart(2, '0');
       const base = (e.created ? new Date(e.created) : null);
       const ref = (base && !isNaN(base)) ? base : new Date();
-      const dateStr = `${ref.getFullYear()}-${p2(ref.getMonth() + 1)}-${p2(ref.getDate())}`;
-      const timeStr = `${p2(ref.getHours())}:${p2(ref.getMinutes())}`;
+      const dtStr = `${ref.getFullYear()}-${p2(ref.getMonth() + 1)}-${p2(ref.getDate())} ${p2(ref.getHours())}:${p2(ref.getMinutes())}`;
       h += field('金额 (¥)', `<input id="f-amt" type="number" step="0.01" value="${e.amount != null ? e.amount : ''}" />`);
       h += field('方向', `<div class="seg" id="f-dir">
         <button type="button" data-d="out" class="${e.direction !== 'in' ? 'on' : ''}">支出</button>
         <button type="button" data-d="in" class="${e.direction === 'in' ? 'on' : ''}">收入</button></div>`);
-      h += field('日期', `<input id="f-ldate" placeholder="YYYY-MM-DD" value="${esc(dateStr)}" />`);
-      h += field('时间', `<input id="f-ltime" placeholder="HH:mm" value="${esc(timeStr)}" />`);
+      h += field('时间', `<input id="f-ldatetime" placeholder="YYYY-MM-DD HH:mm" value="${esc(dtStr)}" />`);
       h += field('备注', `<input id="f-body" value="${esc(e.body || '')}" />`);
     } else if (type === 'inspiration') {
       h += field('灵感内容', `<textarea id="f-body">${esc(e.body || '')}</textarea>`);
@@ -272,23 +275,26 @@
     const patch = { type, category: cat, body };
     if (type === 'task') {
       patch.title = $('#f-title').value;
-      patch.dueDate = $('#f-due').value;
+      const due = ($('#f-due').value || '').trim();
+      if (due && !/^\d{4}-\d{2}-\d{2}( \d{1,2}:\d{2})?$/.test(due)) { toast('截止时间格式应为 YYYY-MM-DD 或 YYYY-MM-DD HH:mm'); return null; }
+      patch.dueDate = due;
       patch.done = $('#f-done').checked;
     } else if (type === 'meeting') {
       patch.title = $('#f-title').value;
-      patch.meetingDate = $('#f-mdate').value;
+      const md = ($('#f-mdate').value || '').trim();
+      if (md && !/^\d{4}-\d{2}-\d{2}( \d{1,2}:\d{2})?$/.test(md)) { toast('会议时间格式应为 YYYY-MM-DD 或 YYYY-MM-DD HH:mm'); return null; }
+      patch.meetingDate = md;
     } else if (type === 'ledger') {
       patch.amount = parseFloat($('#f-amt').value) || 0;
       patch.direction = ($('#f-dir').querySelector('.on') || {}).dataset?.d || 'out';
-      const dStr = ($('#f-ldate')?.value || '').trim();
-      const tStr = ($('#f-ltime')?.value || '').trim() || '00:00';
-      // 校验日期 YYYY-MM-DD
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(dStr)) { toast('日期格式应为 YYYY-MM-DD'); return null; }
-      // 校验时间 HH:mm
-      if (!/^\d{1,2}:\d{2}$/.test(tStr)) { toast('时间格式应为 HH:mm'); return null; }
-      const [hh, mm] = tStr.split(':').map(n => parseInt(n, 10));
+      const raw = ($('#f-ldatetime')?.value || '').trim();
+      // 允许 YYYY-MM-DD 或 YYYY-MM-DD HH:mm
+      if (!/^\d{4}-\d{2}-\d{2}( \d{1,2}:\d{2})?$/.test(raw)) { toast('时间格式应为 YYYY-MM-DD HH:mm'); return null; }
+      const norm = raw.indexOf(' ') === -1 ? raw + ' 00:00' : raw;
+      const [datePart, timePart] = norm.split(' ');
+      const [hh, mm] = timePart.split(':').map(n => parseInt(n, 10));
       if (hh > 23 || mm > 59) { toast('时间不合法（时 0-23，分 0-59）'); return null; }
-      const dt = new Date(dStr + 'T' + String(hh).padStart(2, '0') + ':' + String(mm).padStart(2, '0') + ':00');
+      const dt = new Date(datePart + 'T' + String(hh).padStart(2, '0') + ':' + String(mm).padStart(2, '0') + ':00');
       if (isNaN(dt)) { toast('日期或时间不合法'); return null; }
       // 账本的日期时间即记录时刻，存入 created（新建与编辑一致）
       patch.created = dt.toISOString();
@@ -314,12 +320,12 @@
     const target = prompt('转为哪种类型？输入：misc / task / ledger / meeting', 'misc');
     if (!target || !TYPE_ORDER.includes(target)) return;
     const extra = {};
-    if (target === 'task') extra.dueDate = prompt('截止日期（可空，格式 YYYY-MM-DD）', '') || '';
+    if (target === 'task') extra.dueDate = prompt('截止时间（可空，格式 YYYY-MM-DD 或 YYYY-MM-DD HH:mm）', '') || '';
     if (target === 'ledger') {
       extra.amount = parseFloat(prompt('金额（¥）', '0')) || 0;
       extra.direction = confirm('这是收入吗？确定=收入，取消=支出') ? 'in' : 'out';
     }
-    if (target === 'meeting') extra.meetingDate = prompt('会议日期（可空，格式 YYYY-MM-DD）', '') || '';
+    if (target === 'meeting') extra.meetingDate = prompt('会议时间（可空，格式 YYYY-MM-DD 或 YYYY-MM-DD HH:mm）', '') || '';
     store.convertInspiration(id, target, extra);
     renderList();
     await sync();
