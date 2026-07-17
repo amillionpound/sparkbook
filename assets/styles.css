@@ -46,6 +46,8 @@ body {
 .icon-btn:hover { background: #eef0f6; }
 .mini-btn { width: 22px; height: 22px; border-radius: 6px; border: 1px solid var(--line); background: #fff; cursor: pointer; line-height: 1; }
 .link-btn { border: none; background: transparent; color: var(--primary); cursor: pointer; font-size: 13px; }
+.rec-inline { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.rec-inline input[type=file] { flex: 1; min-width: 160px; }
 
 /* 顶栏 */
 .topbar { display: flex; align-items: center; gap: 10px; padding: 12px 16px; background: var(--panel);

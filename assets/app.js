@@ -224,8 +224,10 @@
   function field(label, html) { return `<div class="field"><label>${label}</label>${html}</div>`; }
   function formHtml(type, e) {
     e = e || {};
+    // 会议类型新建时默认分类=工作（日报核心分类），其余类型默认未分类；二者均可手动改
+    const defCat = (type === 'meeting' && !e.category) ? '工作' : e.category;
     const catOpts = ['<option value="">（未分类）</option>']
-      .concat(store.categories().map(c => `<option value="${esc(c)}" ${e.category === c ? 'selected' : ''}>${esc(c)}</option>`));
+      .concat(store.categories().map(c => `<option value="${esc(c)}" ${defCat === c ? 'selected' : ''}>${esc(c)}</option>`));
     let h = `<div class="field"><label>类型</label><select id="f-type">` +
       TYPE_ORDER.map(k => `<option value="${k}" ${type === k ? 'selected' : ''}>${TYPES[k].icon} ${TYPES[k].label}</option>`).join('') +
       `</select></div>`;
@@ -238,6 +240,11 @@
     } else if (type === 'meeting') {
       h += field('标题', `<input id="f-title" value="${esc(e.title || '')}" />`);
       h += field('会议时间', `<input id="f-mdate" placeholder="YYYY-MM-DD HH:mm" value="${esc(e.meetingDate || defaultDateTime())}" />`);
+      h += field('录音转写', `<div class="rec-inline">
+        <input id="f-rec-file" type="file" accept="audio/*,.mp3,.m4a,.wav,.flac,.ogg,.amr" />
+        <button type="button" id="f-rec-go" class="btn btn-ghost">🎙 转写并填入</button>
+        <span id="f-rec-status" class="muted small"></span>
+      </div>`);
       h += field('纪要 / 正文', `<textarea id="f-body">${esc(e.body || '')}</textarea>`);
     } else if (type === 'ledger') {
       // 账本：日期+时间合并为单个文本框（不依赖控件）；新建默认当前时刻，编辑显示已保存时刻
@@ -279,6 +286,25 @@
       $('#editor-stamps').textContent = '';
     }
     $('#editor').classList.remove('hidden');
+    // 会议编辑器内嵌录音转写：选文件→上传→转写→填入正文
+    const recGo = $('#f-rec-go');
+    if (recGo) {
+      recGo.onclick = async () => {
+        const file = $('#f-rec-file').files[0];
+        if (!file) { toast('请先选择录音文件'); return; }
+        if (file.size > 5 * 1024 * 1024) { toast('音频建议小于 5MB（短录音）；更长录音暂不支持'); $('#f-rec-status').textContent = ''; return; }
+        $('#f-rec-status').textContent = '上传中…';
+        try {
+          const key = await uploadAudio(file);
+          $('#f-rec-status').textContent = '云端转写中（可能需1-2分钟）…';
+          const text = await transcribeAudio(key);
+          const ta = $('#f-body');
+          ta.value = (ta.value ? ta.value + '\n\n' : '') + text;
+          $('#f-rec-status').textContent = '已填入纪要';
+          toast('录音已转写并填入纪要');
+        } catch (e) { $('#f-rec-status').textContent = ''; toast('转写失败：' + (e.message || e)); }
+      };
+    }
     const first = $('#editor-body').querySelector('input,textarea,select');
     if (first) setTimeout(() => first.focus(), 50);
   }
@@ -451,38 +477,40 @@
     $('#rec-result').value = ''; $('#rec-save').disabled = true; $('#rec-status').textContent = '';
     $('#recorder').classList.remove('hidden');
   }
+  // 中继上传：前端把音频 POST 给 SCF，SCF 用服务端密钥写 COS（免浏览器直连 CORS 痛点）
+  // 受 API 网关请求体上限（约 6MB）限制，超过则提示用更短录音。
+  async function uploadAudio(file) {
+    const ext = (file.name.split('.').pop() || 'm4a').toLowerCase();
+    const r = await fetch(API_BASE + '/api/asr/upload?ext=' + encodeURIComponent(ext), {
+      method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: file,
+    });
+    if (!r.ok) throw new Error('上传 HTTP ' + r.status);
+    const d = await r.json().catch(() => ({}));
+    if (d.code !== 0) throw new Error(d.msg || ('code ' + d.code));
+    return d.key;
+  }
+  async function transcribeAudio(key) {
+    const r = await fetch(API_BASE + '/api/asr/transcribe', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ key }),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (d.code !== 0) throw new Error(d.msg || ('code ' + d.code));
+    return d.text || '';
+  }
   async function recTranscribe() {
     const file = $('#rec-file').files[0];
     if (!file) { toast('请先选择录音文件'); return; }
-    const ext = (file.name.split('.').pop() || 'm4a').toLowerCase();
-    $('#rec-status').textContent = '获取上传凭证…';
-    let presign;
-    try {
-      const r = await fetch(API_BASE + '/api/asr/presign', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ext }),
-      });
-      const d = await r.json().catch(() => ({}));
-      if (d.code !== 0) { toast('获取凭证失败：' + (d.msg || d.code)); $('#rec-status').textContent = ''; return; }
-      presign = d;
-    } catch (e) { toast('请求失败：' + (e.message || e)); $('#rec-status').textContent = ''; return; }
+    if (file.size > 5 * 1024 * 1024) { toast('音频建议小于 5MB（短录音）；更长录音暂不支持'); $('#rec-status').textContent = ''; return; }
     $('#rec-status').textContent = '上传中…';
     try {
-      const up = await fetch(presign.url, { method: 'PUT', headers: { 'Content-Type': 'application/octet-stream' }, body: file });
-      if (!up.ok) { toast('上传失败 ' + up.status); $('#rec-status').textContent = ''; return; }
-    } catch (e) { toast('上传失败：' + (e.message || e)); $('#rec-status').textContent = ''; return; }
-    $('#rec-status').textContent = '云端转写中（可能需1-2分钟）…';
-    try {
-      const r = await fetch(API_BASE + '/api/asr/transcribe', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ key: presign.key }),
-      });
-      const d = await r.json().catch(() => ({}));
-      if (d.code !== 0) { toast('转写失败：' + (d.msg || d.code)); $('#rec-status').textContent = ''; return; }
-      $('#rec-result').value = d.text || '';
-      $('#rec-save').disabled = !(d.text && d.text.trim());
+      const key = await uploadAudio(file);
+      $('#rec-status').textContent = '云端转写中（可能需1-2分钟）…';
+      const text = await transcribeAudio(key);
+      $('#rec-result').value = text;
+      $('#rec-save').disabled = !(text && text.trim());
       $('#rec-status').textContent = '完成';
-    } catch (e) { toast('转写请求失败：' + (e.message || e)); $('#rec-status').textContent = ''; }
+    } catch (e) { $('#rec-status').textContent = ''; toast('转写失败：' + (e.message || e)); }
   }
   async function recSave() {
     const text = $('#rec-result').value.trim();

@@ -149,6 +149,39 @@ def asr_presign():
     return jsonify({'code': 0, 'key': key, 'url': url, 'method': 'PUT'})
 
 
+# ------------------------- 录音中继上传（免浏览器直连 COS 的 CORS 痛点） -------------------------
+# 前端把音频二进制 POST 到本端点，SCF 用服务端密钥写入 asr-tmp/，返回 key。
+# 受 API 网关请求体上限（约 6MB）限制，前端对大文件做分片或提示用户。
+@app.route('/api/asr/upload', methods=['POST', 'OPTIONS'])
+def asr_upload():
+    if request.method == 'OPTIONS':
+        return ('', 204)
+    if not authorized():
+        return auth_fail()
+    if not (COS_SECRET_ID and COS_SECRET_KEY and COS_BUCKET):
+        return jsonify({'code': 2, 'msg': 'SCF 未配置 COS 环境变量'}), 500
+    data = request.get_data()  # 原始字节（fetch body 为 Blob/File 时）
+    if not data:
+        f = request.files.get('file')
+        if f:
+            data = f.read()
+    if not data:
+        return jsonify({'code': 2, 'msg': '空文件'}), 400
+    ext = (request.args.get('ext') or 'm4a').lstrip('.')
+    key = ASR_TEMP_PREFIX + uuid.uuid4().hex + '.' + ext
+    try:
+        _cos_put_raw(key, data)
+    except Exception as e:  # noqa: BLE001
+        return jsonify({'code': 3, 'msg': 'COS 写入失败: ' + str(e)}), 502
+    return jsonify({'code': 0, 'key': key})
+
+
+def _cos_put_raw(key, body):
+    client = _cos_client()
+    client.put_object(Bucket=COS_BUCKET, Key=key.lstrip('/'),
+                      Body=body, ContentType='application/octet-stream')
+
+
 # ------------------------- 加密库（vault）预签名 -------------------------
 # 整个用户加密库作为单个对象 vaults/{vid}.enc 读写。vid 由浏览器端
 # SHA-256(主密码) 派生，SCF 不接触明文/密码，仅对指定 key 下发预签名 URL。
