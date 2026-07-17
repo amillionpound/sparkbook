@@ -230,7 +230,9 @@ def vault_load():
         raw = _cos_get(VAULT_PREFIX + vid + '.enc')
     except Exception as e:  # noqa: BLE001
         msg = str(e)
-        if '404' in msg or 'NoSuchKey' in msg:
+        # COS 在无 ListBucket 权限时，对不存在的对象返回 AccessDenied 而非 NoSuchKey；
+        # 零知识设计下每个用户的库以 vid 命名空间隔离，AccessDenied 视为「该库不存在」。
+        if '404' in msg or 'NoSuchKey' in msg or 'AccessDenied' in msg:
             return jsonify({'code': 10, 'msg': 'not found'})
         return jsonify({'code': 12, 'msg': 'COS 读取失败: ' + msg}), 502
     try:
@@ -300,11 +302,26 @@ def _cos_delete(key):
 
 # ------------------------- 健康检查 / 根路由 -------------------------
 @app.route('/api/health')
+def _cos_probe():
+    """真实探测 COS 读写权限（put/get 一个探针对象，再尽力删除）。"""
+    try:
+        key = '_health_probe'
+        _cos_put(key, b'1')
+        _cos_get(key)
+        try:
+            _cos_client().delete_object(Bucket=COS_BUCKET, Key=key)
+        except Exception:
+            pass
+        return True
+    except Exception:
+        return False
+
+
 def health():
     return jsonify({
         'code': 0, 'ok': True,
         'deepseek': bool(DEEPSEEK_API_KEY),
-        'cos': bool(COS_BUCKET and COS_SECRET_ID),
+        'cos': _cos_probe(),
         'auth': bool(API_TOKEN),
     })
 
