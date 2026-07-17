@@ -327,12 +327,22 @@ MEETING_SYSTEM = (
     '- （格式：负责人 — 事项 — 时限；未提及标注「待确认」）\n\n'
     '## 备忘\n'
     '- （关键风险、未决事项、需跟进点）\n\n'
-    '要求：剔除口语冗余、重复、停顿词（如「那个」「呃」）；不要编造未提及的信息；'
-    '使用中文书面语，精简凝练；若某小节无内容则写「未提及」。'
+    '要求：剔除口语冗余、重复、停顿词（如「那个」「呃」）；使用中文书面语，精简凝练；'
+    '若某小节无内容则写「未提及」。\n'
+    '【严守以下约束，违反视为严重错误】\n'
+    '1. 严禁臆造参会人员的姓名、单位、职务。若录音中无人自报身份，'
+    '不要写出具体人名，改为标注「未明确自报，据对话推测约 N 人，分属不同立场'
+    '（如甲方/乙方、内部/外部、不同团队）」，并以「说话人A/说话人B」区分不同声音。\n'
+    '2. 你（用户）是否为参会者、是否发言、代表哪一方，录音中通常无法确认。'
+    '不要臆断「我方/我」的立场，也不要把某句话归为「用户说的」，'
+    '除非录音中有清晰的第一人称表述（如「我方认为」「我这边的进展是」）；'
+    '若无法判断，在「参会方/人员」处写明「用户身份/立场：录音中无法确认」。\n'
+    '3. 仅依据录音文本归纳，不引入任何文本之外的信息；'
+    '如用户提供「已知背景」，该背景优先采信，但不得据此虚构录音里没有的细节。'
 )
 
 
-def summarize_meeting(raw_text, terms=None):
+def summarize_meeting(raw_text, terms=None, context=None):
     """把逐字稿提炼为结构化会议纪要；失败返回 ('', 错误原因)。"""
     if not raw_text or not raw_text.strip():
         return '', None
@@ -346,6 +356,9 @@ def summarize_meeting(raw_text, terms=None):
             term_list = []
         if term_list:
             user += '\n\n【业务术语提示】整理时请准确保留以下术语：' + '、'.join(term_list)
+    if context and str(context).strip():
+        ctx = str(context).strip()
+        user += '\n\n【已知会议背景（用户提供，优先采信，但不得据此虚构录音中没有的细节）】' + ctx
     messages = [
         {'role': 'system', 'content': MEETING_SYSTEM},
         {'role': 'user', 'content': user},
@@ -379,7 +392,8 @@ def asr_transcribe_route():
         return jsonify({'code': 3, 'msg': err}), 502
     # 纪要提炼（LLM 失败不阻断，降级为原始转写）
     terms = d.get('terms') or None
-    summary, llm_err = summarize_meeting(text, terms)
+    context = d.get('context') or None
+    summary, llm_err = summarize_meeting(text, terms, context)
     resp = {'code': 0, 'text': text}
     if summary:
         resp['summary'] = summary

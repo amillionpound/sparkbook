@@ -244,6 +244,10 @@
         <input id="f-rec-file" type="file" accept="audio/*,.mp3,.m4a,.wav,.flac,.ogg,.amr" />
         <button type="button" id="f-rec-go" class="btn btn-ghost">🎙 转写并填入</button>
         <span id="f-rec-status" class="muted small"></span>
+      </div>
+      <div class="rec-ctx-wrap">
+        <label class="small muted">已知背景（选填，转写更准确）— 如「和A厂商对接，我方为甲方；参会约3人」</label>
+        <textarea id="f-rec-ctx" class="textout-area" placeholder="例：与XX厂商需求对接会，我方甲方，录音约3人分属厂商与行内两方。"></textarea>
       </div>`);
       h += field('纪要 / 正文', `<textarea id="f-body">${esc(e.body || '')}</textarea>`);
     } else if (type === 'ledger') {
@@ -299,7 +303,8 @@
           $('#f-rec-status').textContent = '云端转写中（可能需1-2分钟）…';
           const sp = store.styleProfile();
           const terms = (sp && sp.terms) ? sp.terms : [];
-          const res = await transcribeAudio(key, terms);
+          const ctx = ($('#f-rec-ctx') ? $('#f-rec-ctx').value : '') || '';
+          const res = await transcribeAudio(key, terms, ctx);
           const fill = res.summary || res.text;
           const ta = $('#f-body');
           ta.value = (ta.value ? ta.value + '\n\n' : '') + fill;
@@ -493,10 +498,12 @@
     if (d.code !== 0) throw new Error(d.msg || ('code ' + d.code));
     return d.key;
   }
-  async function transcribeAudio(key, terms) {
+  async function transcribeAudio(key, terms, context) {
+    const body = { key, terms: terms || [] };
+    if (context && context.trim()) body.context = context.trim();
     const r = await fetch(API_BASE + '/api/asr/transcribe', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ key, terms: terms || [] }),
+      body: JSON.stringify(body),
     });
     const d = await r.json().catch(() => ({}));
     if (d.code !== 0) throw new Error(d.msg || ('code ' + d.code));
@@ -512,7 +519,8 @@
       $('#rec-status').textContent = '云端转写中（可能需1-2分钟）…';
       const sp = store.styleProfile();
       const terms = (sp && sp.terms) ? sp.terms : [];
-      const res = await transcribeAudio(key, terms);
+      const ctx = ($('#rec-ctx') ? $('#rec-ctx').value : '') || '';
+      const res = await transcribeAudio(key, terms, ctx);
       const fill = res.summary || res.text;
       $('#rec-result').value = fill;
       $('#rec-save').disabled = !(fill && fill.trim());

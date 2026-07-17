@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#1f2937" />
   <title>Sparkbook · 灵感簿</title>
   <link rel="manifest" href="manifest.webmanifest" />
-  <link rel="stylesheet" href="assets/styles.css?v=20260717l" />
+  <link rel="stylesheet" href="assets/styles.css?v=20260717m" />
 </head>
 <body>
   <!-- 解锁页 -->
@@ -209,6 +209,10 @@
         <div class="field">
           <input id="rec-file" type="file" accept="audio/*,.mp3,.m4a,.wav,.flac,.ogg,.amr" />
         </div>
+        <div class="field">
+          <label>已知背景（选填，转写更准确）— 如「和A厂商对接，我方为甲方；参会约3人」，不填则按录音推测</label>
+          <textarea id="rec-ctx" class="textout-area" placeholder="例：这是与XX厂商的需求对接会，我方是甲方，录音里约3人、分属厂商与行内两方。"></textarea>
+        </div>
         <div class="daily-row">
           <button id="rec-go" class="btn btn-primary">开始转写</button>
           <span id="rec-status" class="muted small"></span>
@@ -228,9 +232,9 @@
   <!-- 轻提示 -->
   <div id="toast" class="toast hidden"></div>
 
-  <script src="assets/crypto.js?v=20260717l"></script>
-  <script src="assets/store.js?v=20260717l"></script>
-  <script src="assets/app.js?v=20260717l"></script>
+  <script src="assets/crypto.js?v=20260717m"></script>
+  <script src="assets/store.js?v=20260717m"></script>
+  <script src="assets/app.js?v=20260717m"></script>
   <script>
     if ('serviceWorker' in navigator) {
       window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
