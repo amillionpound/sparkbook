@@ -44,9 +44,8 @@
       this.sessionDays = Math.max(3, Math.min(14, d | 0));
       localStorage.setItem(SESSION_DAYS_KEY, String(this.sessionDays));
     }
-    // 是否能免密自动解锁（仅 PWA 安装态）
+    // 是否能免密自动解锁（会话未过期即可，不限 PWA/浏览器）
     canAutoUnlock() {
-      if (!isStandalone()) return false;
       try {
         const s = JSON.parse(localStorage.getItem(SESSION_KEY) || 'null');
         if (!s || !s.expiresAt) return false;
@@ -66,17 +65,18 @@
       } catch { return false; }
     }
     _persistSession(password) {
-      if (!isStandalone()) return; // 普通链接不持久化会话
-      const devB64 = localStorage.getItem(DEVKEY_KEY) ||
-        SparkCrypto.bufToB64(crypto.getRandomValues(new Uint8Array(32)).buffer);
-      localStorage.setItem(DEVKEY_KEY, devB64);
-      const skKey = crypto.subtle.importKey('raw', SparkCrypto.b64ToBuf(devB64),
-        { name: 'AES-GCM' }, true, ['encrypt']);
-      return Promise.resolve(skKey).then(k => SparkCrypto.encryptWithKey(k, password)).then(env => {
-        localStorage.setItem(SESSION_KEY, JSON.stringify({
-          ...env, expiresAt: Date.now() + this.sessionDays * 864e5,
-        }));
-      });
+      try {
+        const devB64 = localStorage.getItem(DEVKEY_KEY) ||
+          SparkCrypto.bufToB64(crypto.getRandomValues(new Uint8Array(32)).buffer);
+        localStorage.setItem(DEVKEY_KEY, devB64);
+        const skKey = crypto.subtle.importKey('raw', SparkCrypto.b64ToBuf(devB64),
+          { name: 'AES-GCM' }, true, ['encrypt']);
+        return Promise.resolve(skKey).then(k => SparkCrypto.encryptWithKey(k, password)).then(env => {
+          localStorage.setItem(SESSION_KEY, JSON.stringify({
+            ...env, expiresAt: Date.now() + this.sessionDays * 864e5,
+          }));
+        });
+      } catch (e) { return Promise.resolve(); }
     }
     clearSession() {
       localStorage.removeItem(SESSION_KEY);
