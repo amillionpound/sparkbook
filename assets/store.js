@@ -87,6 +87,7 @@
       const { vid } = await SparkCrypto.unlock(password);
       this.vid = vid;
       const env = await this.loadEnvelope(vid);
+      this.isNewVault = !env;
       let payload;
       if (!env) {
         this.saltB64 = SparkCrypto.bufToB64(crypto.getRandomValues(new Uint8Array(16)).buffer);
@@ -123,23 +124,17 @@
 
     // ---- 存储适配器 ----
     async loadEnvelope(vid) {
-      // 1) 尝试 COS 预签名 GET
+      // 经 SCF 中继从 COS 读取密文（服务端凭证，无需浏览器 CORS）
       try {
-        const r = await fetch(API_BASE + '/api/vault/presign', {
+        const r = await fetch(API_BASE + '/api/vault/load', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ vid, action: 'get' }),
+          body: JSON.stringify({ vid }),
         });
-        if (r.ok) {
-          const { url } = await r.json();
-          const gr = await fetch(url);
-          if (gr.ok) {
-            this.mode = 'cos';
-            return await gr.json();
-          }
-          if (gr.status === 403 || gr.status === 404) return null; // 新库
-        }
-      } catch (e) { /* 走回退 */ }
-      // 2) 本地回退
+        const d = await r.json().catch(() => ({}));
+        if (d.code === 0 && d.env) { this.mode = 'cos'; return d.env; }
+        if (d.code === 10) return null; // 新库（云端无此 vid 的保险库）
+      } catch (e) { /* 云异常走本地缓存 */ }
+      // 本地加密镜像缓存（仅离线查看，非数据主存）
       try {
         const raw = localStorage.getItem(LOCAL_PREFIX + vid);
         if (raw) { this.mode = 'local'; return JSON.parse(raw); }
@@ -152,28 +147,19 @@
       this.state.updatedAt = nowISO();
       const { iv, ct } = await SparkCrypto.encryptJSON(this.key, this.state);
       const env = { salt: this.saltB64, iv, ct };
-      // COS 优先
-      let savedCos = false;
-      try {
-        const r = await fetch(API_BASE + '/api/vault/presign', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ vid: this.vid, action: 'put' }),
-        });
-        if (r.ok) {
-          const { url } = await r.json();
-          const pr = await fetch(url, {
-            method: 'PUT', headers: { 'Content-Type': 'application/octet-stream' },
-            body: JSON.stringify(env),
-          });
-          if (pr.ok) savedCos = true;
-        }
-      } catch (e) {}
-      // 本地镜像（离线/回退）
-      try {
-        localStorage.setItem(LOCAL_PREFIX + this.vid, JSON.stringify(env));
-        if (savedCos) this.mode = 'cos'; else this.mode = 'local';
-      } catch (e) {}
-      return this.mode;
+      // 云端优先：经 SCF 中继写入 COS（服务端凭证，无需浏览器 CORS）
+      const r = await fetch(API_BASE + '/api/vault/save', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ vid: this.vid, env }),
+      });
+      if (!r.ok) {
+        const e = await r.json().catch(() => ({}));
+        throw new Error('云端保存失败：' + (e.msg || ('HTTP ' + r.status)));
+      }
+      this.mode = 'cos';
+      // 本地仅作加密镜像缓存（离线查看用，非数据主存）
+      try { localStorage.setItem(LOCAL_PREFIX + this.vid, JSON.stringify(env)); } catch (_) {}
+      return 'cos';
     }
 
     // ---- CRUD ----

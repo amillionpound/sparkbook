@@ -30,6 +30,13 @@
   async function doUnlock(pw, remember) {
     try {
       await store.unlock(pw, { remember });
+      if (store.isNewVault) {
+        if (!confirm('未找到该密码对应的保险库，将以该密码创建新的加密保险库。\n如果你已有数据，请取消并使用原来的密码。')) {
+          store.lock();
+          $('#password').value = '';
+          return;
+        }
+      }
       $('#lock-screen').classList.add('hidden');
       $('#app').classList.remove('hidden');
       afterUnlock();

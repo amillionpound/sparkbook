@@ -6,10 +6,13 @@ sparkbook — SCF Web 函数后端（纯 API 服务）
   - /api/ai          调 DeepSeek 生成/进化日报与会议纪要（开启 prompt caching）
   - /api/asr/presign 下发 COS 预签名 PUT URL，供浏览器直传 M4A（不暴露密钥）
   - /api/asr/transcribe 用腾讯云 ASR 对临时音频转写，返回文本并清理
-  - /api/vault/presign 下发 COS 预签名 URL，供浏览器读写整库加密对象 vaults/{vid}.enc
+  - /api/vault/save   接收浏览器加密信封（密文），服务端凭证写入 COS（中继，免 CORS）
+  - /api/vault/load   服务端凭证从 COS 读回加密信封（中继，免 CORS）
+  - /api/vault/presign 仅 ASR 录音上传用（浏览器直传大文件仍需桶 CORS）
 
 零知识边界：SCF 永不接触笔记明文/主密码。它只代理 LLM 与 ASR，
-所有敏感数据在浏览器端加解密。ASR 的腾讯云密钥复用 COS 同一套密钥。
+所有敏感数据在浏览器端加解密；vault 中继仅经手密文（vid + 加密信封）。
+ASR 的腾讯云密钥复用 COS 同一套密钥。
 
 依赖（打包进 vendor/）：Flask 3.x + requests + tencentcloud-sdk-python-asr
 """
@@ -172,6 +175,69 @@ def vault_presign():
     expired = 3600 if action == 'put' else 600
     url = cos_presign_url(action, key, expired=expired)
     return jsonify({'code': 0, 'key': key, 'url': url, 'method': action.upper()})
+
+
+# ------------------------- 加密库（vault）中继存储 -------------------------
+# 为避免浏览器直连 COS 的 CORS 配置痛点（与 word-dictation 一致），
+# 改由 SCF 在服务端用凭证读写 COS；SCF 仅经手密文（零知识边界不变）。
+def _cos_put(key, body):
+    client = _cos_client()
+    client.put_object(Bucket=COS_BUCKET, Key=key.lstrip('/'),
+                      Body=body, ContentType='application/json')
+
+
+def _cos_get(key):
+    client = _cos_client()
+    resp = client.get_object(Bucket=COS_BUCKET, Key=key.lstrip('/'))
+    return resp['Body'].get_raw_stream().read()
+
+
+@app.route('/api/vault/save', methods=['POST', 'OPTIONS'])
+def vault_save():
+    if request.method == 'OPTIONS':
+        return ('', 204)
+    if not authorized():
+        return auth_fail()
+    if not (COS_SECRET_ID and COS_SECRET_KEY and COS_BUCKET):
+        return jsonify({'code': 2, 'msg': 'SCF 未配置 COS 环境变量'}), 500
+    d = request.get_json(force=True, silent=True) or {}
+    vid = d.get('vid', '')
+    env = d.get('env')
+    if not vid or len(vid) != 64 or any(c not in '0123456789abcdef' for c in vid):
+        return jsonify({'code': 2, 'msg': '无效的 vid'}), 400
+    if not isinstance(env, dict) or 'ct' not in env or 'iv' not in env or 'salt' not in env:
+        return jsonify({'code': 2, 'msg': '无效的加密信封'}), 400
+    try:
+        _cos_put(VAULT_PREFIX + vid + '.enc', json.dumps(env).encode('utf-8'))
+    except Exception as e:  # noqa: BLE001
+        return jsonify({'code': 3, 'msg': 'COS 写入失败: ' + str(e)}), 502
+    return jsonify({'code': 0, 'msg': 'ok'})
+
+
+@app.route('/api/vault/load', methods=['POST', 'OPTIONS'])
+def vault_load():
+    if request.method == 'OPTIONS':
+        return ('', 204)
+    if not authorized():
+        return auth_fail()
+    if not (COS_SECRET_ID and COS_SECRET_KEY and COS_BUCKET):
+        return jsonify({'code': 2, 'msg': 'SCF 未配置 COS 环境变量'}), 500
+    d = request.get_json(force=True, silent=True) or {}
+    vid = d.get('vid', '')
+    if not vid or len(vid) != 64 or any(c not in '0123456789abcdef' for c in vid):
+        return jsonify({'code': 2, 'msg': '无效的 vid'}), 400
+    try:
+        raw = _cos_get(VAULT_PREFIX + vid + '.enc')
+    except Exception as e:  # noqa: BLE001
+        msg = str(e)
+        if '404' in msg or 'NoSuchKey' in msg:
+            return jsonify({'code': 10, 'msg': 'not found'})
+        return jsonify({'code': 12, 'msg': 'COS 读取失败: ' + msg}), 502
+    try:
+        env = json.loads(raw.decode('utf-8'))
+    except Exception:
+        return jsonify({'code': 11, 'msg': '数据损坏'})
+    return jsonify({'code': 0, 'env': env})
 
 
 # ------------------------- 腾讯云 ASR（录音文件识别） -------------------------
