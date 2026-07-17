@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+<title>灵感极速录入 · 原型</title>
+<style>
+  :root{
+    --bg:#f5f6f8; --card:#ffffff; --ink:#1f2329; --sub:#8a919e;
+    --line:#e7e9ee; --brand:#5b6cff; --brand-soft:#eef0ff;
+    --ok:#28a745; --shadow:0 8px 30px rgba(20,30,60,.10);
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{margin:0;padding:0}
+  body{
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+    background:var(--bg);color:var(--ink);min-height:100vh;
+  }
+  .wrap{max-width:560px;margin:0 auto;padding:20px 16px 140px}
+  header{display:flex;align-items:center;gap:10px;margin-bottom:6px}
+  header .dot{width:10px;height:10px;border-radius:50%;background:var(--brand)}
+  header h1{font-size:18px;margin:0;font-weight:650}
+  .hint{color:var(--sub);font-size:13px;margin:0 0 18px;line-height:1.5}
+  .hint kbd{background:var(--card);border:1px solid var(--line);border-bottom-width:2px;border-radius:6px;padding:1px 6px;font-size:12px;font-family:inherit}
+
+  /* 灵感流 */
+  .stream{display:flex;flex-direction:column;gap:10px}
+  .empty{text-align:center;color:var(--sub);font-size:14px;padding:48px 0;border:1.5px dashed var(--line);border-radius:14px}
+  .item{
+    background:var(--card);border:1px solid var(--line);border-radius:14px;
+    padding:13px 15px;box-shadow:var(--shadow);position:relative;
+    animation:pop .28s cubic-bezier(.2,.8,.2,1);
+  }
+  @keyframes pop{from{opacity:0;transform:translateY(-8px) scale(.98)}to{opacity:1;transform:none}}
+  .item .time{font-size:11px;color:var(--sub);letter-spacing:.3px}
+  .item .body{font-size:15px;line-height:1.55;margin-top:5px;white-space:pre-wrap;word-break:break-word}
+  .item .tag{display:inline-block;margin-top:8px;font-size:11px;color:var(--brand);background:var(--brand-soft);padding:2px 9px;border-radius:20px}
+  .item .del{position:absolute;top:10px;right:12px;color:var(--sub);font-size:13px;cursor:pointer;border:none;background:none}
+  .item .del:hover{color:#e5484d}
+
+  /* 悬浮按钮 */
+  .fab{
+    position:fixed;right:22px;bottom:26px;width:60px;height:60px;border-radius:50%;
+    background:var(--brand);color:#fff;border:none;font-size:28px;line-height:1;
+    box-shadow:0 10px 26px rgba(91,108,255,.45);cursor:pointer;z-index:20;
+    display:flex;align-items:center;justify-content:center;
+    animation:breathe 2.4s ease-in-out infinite;
+  }
+  @keyframes breathe{0%,100%{transform:scale(1)}50%{transform:scale(1.06)}}
+  .fab:active{transform:scale(.94)}
+  .fab .badge{
+    position:absolute;top:-4px;right:-4px;min-width:20px;height:20px;padding:0 5px;
+    background:#e5484d;color:#fff;border-radius:11px;font-size:11px;font-weight:700;
+    display:flex;align-items:center;justify-content:center;border:2px solid var(--bg);
+  }
+
+  /* 捕获层 */
+  .overlay{
+    position:fixed;inset:0;background:rgba(20,26,40,.42);backdrop-filter:blur(3px);
+    display:none;align-items:flex-end;justify-content:center;z-index:30;
+    animation:fade .18s ease;
+  }
+  .overlay.open{display:flex}
+  @keyframes fade{from{opacity:0}to{opacity:1}}
+  .sheet{
+    width:100%;max-width:560px;background:var(--card);border-radius:20px 20px 0 0;
+    padding:18px 16px calc(18px + env(safe-area-inset-bottom));box-shadow:0 -8px 30px rgba(0,0,0,.18);
+    animation:rise .22s cubic-bezier(.2,.8,.2,1);
+  }
+  @keyframes rise{from{transform:translateY(100%)}to{transform:none}}
+  .sheet .bar{width:38px;height:4px;background:var(--line);border-radius:3px;margin:0 auto 14px}
+  .sheet .label{font-size:13px;color:var(--sub);margin-bottom:8px}
+  .sheet textarea{
+    width:100%;min-height:96px;resize:none;border:1px solid var(--line);border-radius:14px;
+    padding:13px 14px;font-size:16px;font-family:inherit;color:var(--ink);outline:none;
+    background:#fafbfc;line-height:1.5;
+  }
+  .sheet textarea:focus{border-color:var(--brand);background:#fff}
+  .chips{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0 4px}
+  .chip{
+    font-size:13px;padding:6px 14px;border-radius:20px;border:1px solid var(--line);
+    background:#fff;color:var(--sub);cursor:pointer;user-select:none;transition:.15s;
+  }
+  .chip.on{background:var(--brand-soft);color:var(--brand);border-color:transparent;font-weight:600}
+  .row{display:flex;align-items:center;justify-content:space-between;margin-top:12px;gap:12px}
+  .tip{font-size:12px;color:var(--sub)}
+  .tip kbd{background:#f0f1f4;border:1px solid var(--line);border-radius:5px;padding:0 5px;font-size:11px}
+  .btn{
+    border:none;border-radius:12px;padding:11px 22px;font-size:15px;font-weight:600;cursor:pointer;
+  }
+  .btn.primary{background:var(--brand);color:#fff;flex:1}
+  .btn.primary:active{transform:scale(.98)}
+  .btn.ghost{background:#f0f1f4;color:var(--ink)}
+
+  /* toast */
+  .toast{
+    position:fixed;left:50%;top:24px;transform:translateX(-50%) translateY(-20px);
+    background:#1f2329;color:#fff;font-size:13px;padding:9px 16px;border-radius:24px;
+    opacity:0;pointer-events:none;transition:.25s;z-index:40;box-shadow:var(--shadow);
+  }
+  .toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+  .toast .tdot{color:#5ee08a;margin-right:6px}
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <header><span class="dot"></span><h1>灵感极速录入</h1></header>
+    <p class="hint">
+      右下角悬浮按钮随时捕获，或按 <kbd>N</kbd> 直接唤起。<br>
+      输入后按 <kbd>Enter</kbd> 立即保存并清空，可连续速记；<kbd>Esc</kbd> 收起。
+    </p>
+    <div class="stream" id="stream"></div>
+  </div>
+
+  <button class="fab" id="fab" title="捕获灵感 (N)">＋<span class="badge" id="badge" hidden>0</span></button>
+
+  <div class="overlay" id="overlay">
+    <div class="sheet">
+      <div class="bar"></div>
+      <div class="label">捕获一条灵感 · 自动标记类型「灵感」</div>
+      <textarea id="ta" placeholder="脑子里刚冒出来的想法…（Enter 保存，Shift+Enter 换行）"></textarea>
+      <div class="chips" id="chips"></div>
+      <div class="row">
+        <span class="tip"><kbd>Enter</kbd> 保存 · <kbd>Esc</kbd> 完成</span>
+        <span>
+          <button class="btn ghost" id="done">完成</button>
+          <button class="btn primary" id="save" style="margin-left:8px">保存</button>
+        </span>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"><span class="tdot">●</span><span id="toastMsg"></span></div>
+
+<script>
+(function(){
+  const KEY='sparkbook_inspiration_proto';
+  const CATS=['生活','工作','项目','随手'];
+  let items=load();
+  let picked=null; // 当前选中的分类
+
+  const $=id=>document.getElementById(id);
+  const stream=$('stream'), fab=$('fab'), badge=$('badge'),
+        overlay=$('overlay'), ta=$('ta'), chips=$('chips'),
+        toast=$('toast'), toastMsg=$('toastMsg');
+
+  // 渲染分类 chips
+  CATS.forEach(c=>{
+    const el=document.createElement('div');
+    el.className='chip';el.textContent=c;
+    el.onclick=()=>{picked=(picked===c)?null:c;renderChips();};
+    chips.appendChild(el);
+  });
+  function renderChips(){
+    [...chips.children].forEach((el,i)=>el.classList.toggle('on',CATS[i]===picked));
+  }
+
+  function load(){try{return JSON.parse(localStorage.getItem(KEY))||[]}catch(e){return[]}}
+  function persist(){localStorage.setItem(KEY,JSON.stringify(items))}
+
+  function nowStr(){
+    const d=new Date(),p=n=>String(n).padStart(2,'0');
+    return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+  }
+
+  function render(){
+    if(!items.length){
+      stream.innerHTML='<div class="empty">还没有灵感。<br>点右下角的 ＋ 捕获第一条吧。</div>';
+    }else{
+      stream.innerHTML='';
+      items.forEach(it=>{
+        const d=document.createElement('div');d.className='item';
+        d.innerHTML=`<button class="del" data-id="${it.id}">✕</button>
+          <div class="time">${it.time}</div>
+          <div class="body"></div>${it.cat?`<span class="tag">${it.cat}</span>`:''}`;
+        d.querySelector('.body').textContent=it.text;
+        stream.appendChild(d);
+      });
+    }
+    const n=items.length;
+    badge.textContent=n;badge.hidden=n===0;
+  }
+
+  function showToast(msg){
+    toastMsg.textContent=msg;toast.classList.add('show');
+    clearTimeout(showToast._t);
+    showToast._t=setTimeout(()=>toast.classList.remove('show'),1400);
+  }
+
+  function openSheet(){
+    overlay.classList.add('open');
+    setTimeout(()=>ta.focus(),60);
+  }
+  function closeSheet(){
+    overlay.classList.remove('open');ta.value='';picked=null;renderChips();
+  }
+
+  function save(){
+    const text=ta.value.trim();
+    if(!text){ta.focus();return;}
+    items.unshift({id:Date.now()+''+Math.random().toString(36).slice(2,6),text,cat:picked,time:nowStr()});
+    persist();render();
+    showToast('已捕获 · '+nowStr());
+    ta.value='';picked=null;renderChips();
+    ta.focus(); // 保持打开，连续速记
+  }
+
+  // 事件
+  fab.onclick=openSheet;
+  $('save').onclick=save;
+  $('done').onclick=closeSheet;
+  overlay.onclick=e=>{if(e.target===overlay)closeSheet();};
+  ta.addEventListener('keydown',e=>{
+    if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();save();}
+    if(e.key==='Escape'){closeSheet();}
+  });
+  stream.addEventListener('click',e=>{
+    const b=e.target.closest('.del');if(!b)return;
+    items=items.filter(x=>x.id!==b.dataset.id);persist();render();
+  });
+  document.addEventListener('keydown',e=>{
+    if(e.key==='n'||e.key==='N'){
+      if(overlay.classList.contains('open'))return;
+      if(/INPUT|TEXTAREA/.test(document.activeElement.tagName))return;
+      e.preventDefault();openSheet();
+    }
+    if(e.key==='Escape'&&overlay.classList.contains('open'))closeSheet();
+  });
+
+  render();
+})();
+</script>
+</body>
+</html>
