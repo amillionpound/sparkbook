@@ -30,13 +30,6 @@
   async function doUnlock(pw, remember) {
     try {
       await store.unlock(pw, { remember });
-      if (store.isNewVault) {
-        if (!confirm('未找到该密码对应的保险库，将以该密码创建新的加密保险库。\n如果你已有数据，请取消并使用原来的密码。')) {
-          store.lock();
-          $('#password').value = '';
-          return;
-        }
-      }
       $('#lock-screen').classList.add('hidden');
       $('#app').classList.remove('hidden');
       afterUnlock();
@@ -151,6 +144,61 @@
       if (confirm('确定删除这条记录？')) { store.deleteEntry(b.dataset.del); renderList(); sync(); }
     });
     list.querySelectorAll('[data-conv]').forEach(b => b.onclick = (ev) => { ev.stopPropagation(); convertFlow(b.dataset.conv); });
+    // 点击卡片本身 → 阅读视图（不冒泡到 action 按钮上）
+    list.querySelectorAll('.entry').forEach(el => {
+      el.addEventListener('click', ev => {
+        if (ev.target.closest('.entry-actions')) return; // 点了操作按钮不触发
+        openReader(el.dataset.id);
+      });
+    });
+  }
+
+  // ---------- 阅读详情 ----------
+  let readingId = null;
+  function openReader(id) {
+    const e = store.get(id);
+    if (!e) return;
+    readingId = id;
+    const typeLabel = `${TYPES[e.type].icon} ${TYPES[e.type].label}`;
+    $('#reader-title').textContent = typeLabel;
+    let html = '';
+    // 分类
+    if (e.category) html += `<div class="field"><label>分类</label><p>#${esc(e.category)}</p></div>`;
+    // 按类型渲染字段
+    if (e.type === 'task') {
+      html += `<div class="field"><label>标题</label><p>${esc(e.title)}</p></div>`;
+      if (e.dueDate) html += `<div class="field"><label>截止日期</label><p>${esc(e.dueDate)}</p></div>`;
+      html += `<div class="field"><label>状态</label><p>${e.done ? '✅ 已完成' : '⬜ 未完成'}</p></div>`;
+      if (e.body) html += `<div class="field"><label>备注</label><pre class="reader-text">${esc(e.body)}</pre></div>`;
+    } else if (e.type === 'meeting') {
+      html += `<div class="field"><label>标题</label><p>${esc(e.title)}</p></div>`;
+      if (e.meetingDate) html += `<div class="field"><label>会议日期</label><p>${esc(e.meetingDate)}</p></div>`;
+      if (e.body) html += `<div class="field"><label>纪要 / 正文</label><pre class="reader-text">${esc(e.body)}</pre></div>`;
+    } else if (e.type === 'ledger') {
+      const a = (Number(e.amount) || 0).toFixed(2);
+      const sign = e.direction === 'in' ? '+' : '-';
+      const cls = e.direction === 'in' ? 'amt-in' : 'amt-out';
+      html += `<div class="field"><label>金额</label><p class="${cls}">¥${sign}${a}</p></div>`;
+      if (e.created) {
+        const d = new Date(e.created);
+        if (!isNaN(d)) {
+          const p = n => String(n).padStart(2, '0');
+          html += `<div class="field"><label>时间</label><p>${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}</p></div>`;
+        }
+      }
+      if (e.body) html += `<div class="field"><label>备注</label><p>${esc(e.body)}</p></div>`;
+    } else if (e.type === 'inspiration') {
+      html += `<div class="field"><label>灵感内容</label><pre class="reader-text">${esc(e.body)}</pre></div>`;
+      if (e.capturedAt) html += `<div class="field"><label>捕获时刻</label><p>${fmtDate(e.capturedAt)}</p></div>`;
+    } else { // misc
+      html += `<div class="field"><label>内容</label><pre class="reader-text">${esc(e.body || '')}</pre></div>`;
+    }
+    // 时间戳
+    const edited = e.updated && e.created && e.updated > e.created;
+    $('#reader-stamps').textContent =
+      `创建 ${fmtDate(e.created)}${edited ? ' · 修改 ' + fmtDate(e.updated) : ''}`;
+    $('#reader-body').innerHTML = html;
+    $('#reader').classList.remove('hidden');
   }
 
   // ---------- 编辑/新增 弹层 ----------
@@ -173,11 +221,22 @@
       h += field('会议日期', `<input id="f-mdate" type="date" value="${esc(e.meetingDate || '')}" />`);
       h += field('纪要 / 正文', `<textarea id="f-body">${esc(e.body || '')}</textarea>`);
     } else if (type === 'ledger') {
+      // 账本：日期+时间均手输（不依赖控件），新建默认当前时刻
+      const now = new Date();
+      const p2 = n => String(n).padStart(2, '0');
+      const defDate = existing ? '' : `${now.getFullYear()}-${p2(now.getMonth()+1)}-${p2(now.getDate())}`;
+      const defTime = existing ? '' : `${p2(now.getHours())}:${p2(now.getMinutes())}`;
+      const savedDate = (e.created ? new Date(e.created) : null);
+      const savedDateStr = savedDate && !isNaN(savedDate) ?
+        `${savedDate.getFullYear()}-${p2(savedDate.getMonth()+1)}-${p2(savedDate.getDate())}` : '';
+      const savedTimeStr = savedDate && !isNaN(savedDate) ?
+        `${p2(savedDate.getHours())}:${p2(savedDate.getMinutes())}` : '';
       h += field('金额 (¥)', `<input id="f-amt" type="number" step="0.01" value="${e.amount != null ? e.amount : ''}" />`);
       h += field('方向', `<div class="seg" id="f-dir">
         <button type="button" data-d="out" class="${e.direction !== 'in' ? 'on' : ''}">支出</button>
         <button type="button" data-d="in" class="${e.direction === 'in' ? 'on' : ''}">收入</button></div>`);
-      h += field('日期', `<input id="f-ldate" type="date" value="${esc((e.created || '').slice(0, 10))}" />`);
+      h += field('日期', `<input id="f-ldate" placeholder="YYYY-MM-DD" value="${esc(defDate || savedDateStr)}" />`);
+      h += field('时间', `<input id="f-ltime" placeholder="HH:mm" value="${esc(defTime || savedTimeStr)}" />`);
       h += field('备注', `<input id="f-body" value="${esc(e.body || '')}" />`);
     } else if (type === 'inspiration') {
       h += field('灵感内容', `<textarea id="f-body">${esc(e.body || '')}</textarea>`);
@@ -225,8 +284,24 @@
     } else if (type === 'ledger') {
       patch.amount = parseFloat($('#f-amt').value) || 0;
       patch.direction = ($('#f-dir').querySelector('.on') || {}).dataset?.d || 'out';
-      const d = $('#f-ldate').value;
-      if (d && (!editingId)) patch.created = new Date(d + 'T00:00:00').toISOString();
+      const dStr = ($('#f-ldate')?.value || '').trim();
+      const tStr = ($('#f-ltime')?.value || '').trim();
+      if (dStr) {
+        // 校验日期格式 YYYY-MM-DD
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(dStr)) { toast('日期格式应为 YYYY-MM-DD'); return null; }
+        const dt = new Date(dStr + 'T' + (tStr || '00:00'));
+        if (isNaN(dt)) { toast('日期不合法'); return null; }
+        if (!editingId) patch.created = dt.toISOString();
+        // 若有手输时间且编辑已有记录，也更新 created
+        if (editingId && tStr) {
+          const tParts = tStr.split(':');
+          dt.setHours(parseInt(tParts[0], 10) || 0, parseInt(tParts[1], 10) || 0);
+          patch.created = dt.toISOString();
+        }
+      } else if (!editingId) {
+        // 新建未填日期 → 用当前时刻
+        patch.created = new Date().toISOString();
+      }
     } else if (type === 'inspiration') {
       if (!editingId) patch.capturedAt = new Date().toISOString();
     }
@@ -234,6 +309,7 @@
   }
   async function saveEditor() {
     const patch = collectForm();
+    if (!patch) return; // 校验失败已 toast 提示
     if (editingId) store.updateEntry(editingId, patch);
     else store.addEntry(patch);
     $('#editor').classList.add('hidden');
@@ -299,6 +375,11 @@
         if (confirm('框内有内容，直接退出将丢弃。点「确定」丢弃，点「取消」返回保存。')) $('#editor').classList.add('hidden');
       } else $('#editor').classList.add('hidden');
     };
+    // 阅读弹层
+    $('#reader-close').onclick = () => { readingId = null; $('#reader').classList.add('hidden'); };
+    $('#reader-edit').onclick = () => {
+      if (readingId) { openEditor(readingId); $('#reader').classList.add('hidden'); }
+    };
     $('#add-cat-btn').onclick = () => {
       const name = prompt('新分类名称：');
       if (name && store.addCategory(name)) { renderCats(); sync(); }
@@ -320,8 +401,9 @@
         if (document.activeElement && /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName)) return;
         openEditor(null);
       }
-      if (e.key === 'Escape' && !$('#editor').classList.contains('hidden')) {
-        $('#editor').classList.add('hidden');
+      if (e.key === 'Escape') {
+        if (!$('#reader').classList.contains('hidden')) { readingId = null; $('#reader').classList.add('hidden'); }
+        else if (!$('#editor').classList.contains('hidden')) $('#editor').classList.add('hidden');
       }
     });
   }

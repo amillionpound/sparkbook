@@ -122,6 +122,7 @@ body {
 .seg button.on { background: var(--primary); color: #fff; border-color: var(--primary); }
 .textout-area { width: 100%; min-height: 260px; border: 1px solid var(--line); border-radius: 9px; padding: 10px;
   font-family: inherit; font-size: 14px; outline: none; resize: vertical; }
+.reader-text { margin: 0; white-space: pre-wrap; word-break: break-word; line-height: 1.6; color: var(--ink); }
 
 /* 轻提示 */
 .toast { position: fixed; left: 50%; bottom: 90px; transform: translateX(-50%); background: #1f2937; color: #fff;
