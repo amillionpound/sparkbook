@@ -102,6 +102,7 @@
       x.onclick = (e) => {
         e.stopPropagation();
         const name = x.dataset.x;
+        if (name === '工作') { toast('「工作」是日报核心分类，不可删除'); return; }
         if (confirm(`删除分类「${name}」？该分类下的条目将变为未分类。`)) {
           store.removeCategory(name);
           if (cur.cat === name) cur.cat = '';
@@ -555,15 +556,21 @@
     const sun = new Date(mon); sun.setDate(mon.getDate() + 6);
     return [fmtYMD(mon), fmtYMD(sun)];
   }
+  // 日报只采纳：会议 + 分类为"工作"的条目
+  function isDailySource(e) {
+    if (e.type === 'meeting') return true;
+    return e.category === '工作';
+  }
   function dailyRangeItems() {
+    const all = store.list();
     if (dailyMode === 'week') {
       const s = $('#daily-start').value, e = $('#daily-end').value;
       if (!s || !e) return [];
-      return store.list().filter(x => { const d = fmtDateOnly(x.created); return d >= s && d <= e; });
+      return all.filter(x => { const d = fmtDateOnly(x.created); return d >= s && d <= e && isDailySource(x); });
     }
     const d = $('#daily-date').value;
     if (!d) return [];
-    return store.list().filter(x => fmtDateOnly(x.created) === d);
+    return all.filter(x => fmtDateOnly(x.created) === d && isDailySource(x));
   }
   function renderDailyChecklist() {
     const box = $('#daily-checklist');
@@ -659,8 +666,26 @@
   }
 
   // 风格档案读写
+  // 冷启动：从 DAILY_SEED 提取初始术语/规则（仅当用户从未编辑过风格档案时）
+  const SEED_TERMS = [
+    '对公集市', '同业集市', 'OceanBase', 'Oracle模式', '星环TDH',
+    '经营平台埋点', '厂商对接', '成本管控', 'VP流程', '绩效重算', '系统画像',
+    '需求跟进', '系统运维', '外包人员管理'
+  ];
+  const SEED_RULES = [
+    '精简、可复制、无特殊格式',
+    '段落间不留空行',
+    '每篇2-4点，聚焦进度/风险/资源/验收',
+    '除非用户主动提及，否则不出现"智能表格"等字眼',
+    '措辞官方化，聚焦结果而非过程细节'
+  ];
   function loadStyleUI() {
-    const sp = store.styleProfile() || { terms: [], rules: [], samples: [] };
+    let sp = store.styleProfile() || { terms: [], rules: [], samples: [] };
+    // 冷启动：三项全空时自动填入种子
+    if ((!sp.terms || !sp.terms.length) && (!sp.rules || !sp.rules.length) && (!sp.samples || !sp.samples.length)) {
+      sp = { terms: SEED_TERMS.slice(), rules: SEED_RULES.slice(), samples: [] };
+      store.saveStyleProfile(sp);
+    }
     $('#sp-terms').value = (sp.terms || []).join('\n');
     $('#sp-rules').value = (sp.rules || []).join('\n');
     $('#sp-samples').value = (sp.samples || []).map(s => (s.before || '') + '\n' + (s.after || '')).join('\n\n');
