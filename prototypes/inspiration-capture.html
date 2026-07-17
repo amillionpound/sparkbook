@@ -3,12 +3,13 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-<title>灵感极速录入 · 原型</title>
+<title>灵感极速录入 · 原型 v2</title>
 <style>
   :root{
-    --bg:#f5f6f8; --card:#ffffff; --ink:#1f2329; --sub:#8a919e;
-    --line:#e7e9ee; --brand:#5b6cff; --brand-soft:#eef0ff;
-    --ok:#28a745; --shadow:0 8px 30px rgba(20,30,60,.10);
+    --bg:#f5f6f8;--card:#ffffff;--ink:#1f2329;--sub:#8a919e;
+    --line:#e7e9ee;--brand:#5b6cff;--brand-soft:#eef0ff;
+    --warn:#f59e0b;--danger:#e5484d;
+    --shadow:0 8px 30px rgba(20,30,60,.10);
   }
   *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
   html,body{margin:0;padding:0}
@@ -20,25 +21,47 @@
   header{display:flex;align-items:center;gap:10px;margin-bottom:6px}
   header .dot{width:10px;height:10px;border-radius:50%;background:var(--brand)}
   header h1{font-size:18px;margin:0;font-weight:650}
-  .hint{color:var(--sub);font-size:13px;margin:0 0 18px;line-height:1.5}
+  .hint{color:var(--sub);font-size:13px;margin:0 0 18px;line-height:1.6}
   .hint kbd{background:var(--card);border:1px solid var(--line);border-bottom-width:2px;border-radius:6px;padding:1px 6px;font-size:12px;font-family:inherit}
+
+  /* 工具栏 */
+  .toolbar{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;gap:10px}
+  .toolbar-left{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--sub)}
+  .cb{display:inline-flex;align-items:center;gap:4px;cursor:pointer;user-select:none}
+  .cb input{accent-color:var(--brand)}
+  .btn-sm{
+    border:1px solid var(--line);border-radius:9px;padding:6px 13px;
+    font-size:13px;background:#fff;color:var(--ink);cursor:pointer;white-space:nowrap;
+    transition:.15s;
+  }
+  .btn-sm:active{transform:scale(.96)}
+  .btn-sm.primary{background:var(--brand);color:#fff;border-color:transparent}
+  .btn-sm.danger{color:var(--danger);border-color:#fecaca}
+  .btn-sm:disabled{opacity:.45;cursor:not-allowed}
 
   /* 灵感流 */
   .stream{display:flex;flex-direction:column;gap:10px}
   .empty{text-align:center;color:var(--sub);font-size:14px;padding:48px 0;border:1.5px dashed var(--line);border-radius:14px}
   .item{
-    background:var(--card);border:1px solid var(--line);border-radius:14px;
+    background:var(--card);border:1.5px solid var(--line);border-radius:14px;
     padding:13px 15px;box-shadow:var(--shadow);position:relative;
     animation:pop .28s cubic-bezier(.2,.8,.2,1);
+    transition:border-color .15s;
   }
   @keyframes pop{from{opacity:0;transform:translateY(-8px) scale(.98)}to{opacity:1;transform:none}}
-  .item .time{font-size:11px;color:var(--sub);letter-spacing:.3px}
-  .item .body{font-size:15px;line-height:1.55;margin-top:5px;white-space:pre-wrap;word-break:break-word}
-  .item .tag{display:inline-block;margin-top:8px;font-size:11px;color:var(--brand);background:var(--brand-soft);padding:2px 9px;border-radius:20px}
-  .item .del{position:absolute;top:10px;right:12px;color:var(--sub);font-size:13px;cursor:pointer;border:none;background:none}
-  .item .del:hover{color:#e5484d}
+  .item.sel{border-color:var(--brand);background:linear-gradient(135deg,#fff,var(--brand-soft))}
+  .item .check{position:absolute;top:11px;left:13px;width:20px;height:20px;cursor:pointer;accent-color:var(--brand)}
+  .item .meta{font-size:11px;color:var(--sub);letter-spacing:.3px;margin-left:28px;display:flex;align-items:center;gap:8px}
+  .meta .ts{cursor:default}
+  .meta .edited{color:var(--brand);font-size:10px}
+  .item .body{font-size:15px;line-height:1.55;margin-top:5px;white-space:pre-wrap;word-break:break-word;margin-left:28px}
+  .item .tag{display:inline-block;margin-top:8px;margin-left:28px;font-size:11px;color:var(--brand);background:var(--brand-soft);padding:2px 9px;border-radius:20px}
+  .item .actions{position:absolute;top:10px;right:12px;display:flex;gap:6px}
+  .actions button{border:none;background:none;color:var(--sub);font-size:13px;cursor:pointer;padding:2px 4px;border-radius:5px;transition:.15s}
+  .actions button:hover{color:var(--ink);background:rgba(0,0,0,.05)}
+  .actions .del:hover{color:var(--danger)}
 
-  /* 悬浮按钮 */
+  /* FAB */
   .fab{
     position:fixed;right:22px;bottom:26px;width:60px;height:60px;border-radius:50%;
     background:var(--brand);color:#fff;border:none;font-size:28px;line-height:1;
@@ -76,21 +99,33 @@
     background:#fafbfc;line-height:1.5;
   }
   .sheet textarea:focus{border-color:var(--brand);background:#fff}
-  .chips{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0 4px}
+
+  /* 分类 chips + 自定义 */
+  .chips-row{display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin:12px 0 4px}
   .chip{
     font-size:13px;padding:6px 14px;border-radius:20px;border:1px solid var(--line);
     background:#fff;color:var(--sub);cursor:pointer;user-select:none;transition:.15s;
   }
   .chip.on{background:var(--brand-soft);color:var(--brand);border-color:transparent;font-weight:600}
-  .row{display:flex;align-items:center;justify-content:space-between;margin-top:12px;gap:12px}
+  .add-cat{
+    font-size:13px;padding:6px 12px;border-radius:20px;border:1.5px dashed var(--line);
+    background:transparent;color:var(--sub);cursor:pointer;transition:.15s;
+    display:flex;align-items:center;gap:4px;
+  }
+  .add-cat:hover{border-color:var(--brand);color:var(--brand)}
+
+  /* 底部按钮行 */
+  .row{display:flex;align-items:center;justify-content:space-between;margin-top:14px;gap:12px}
   .tip{font-size:12px;color:var(--sub)}
   .tip kbd{background:#f0f1f4;border:1px solid var(--line);border-radius:5px;padding:0 5px;font-size:11px}
+  .btn-group{display:flex;gap:8px;align-items:center}
   .btn{
-    border:none;border-radius:12px;padding:11px 22px;font-size:15px;font-weight:600;cursor:pointer;
+    border:none;border-radius:12px;padding:11px 20px;font-size:15px;font-weight:600;cursor:pointer;transition:.15s;
   }
-  .btn.primary{background:var(--brand);color:#fff;flex:1}
+  .btn.primary{background:var(--brand);color:#fff}
   .btn.primary:active{transform:scale(.98)}
-  .btn.ghost{background:#f0f1f4;color:var(--ink)}
+  .btn.exit{background:#f0f1f4;color:var(--sub);font-weight:500}
+  .btn.exit:active{background:#e4e6eb}
 
   /* toast */
   .toast{
@@ -100,32 +135,201 @@
   }
   .toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
   .toast .tdot{color:#5ee08a;margin-right:6px}
+
+  /* 确认弹窗 */
+  .confirm-mask{
+    position:fixed;inset:0;background:rgba(20,26,40,.42);backdrop-filter:blur(3px);
+    display:none;align-items:center;justify-content:center;z-index:35;
+  }
+  .confirm-mask.open{display:flex}
+  .dialog{
+    background:var(--card);border-radius:18px;padding:22px;min-width:280px;
+    max-width:400px;box-shadow:var(--shadow);
+  }
+  .dialog p{font-size:15px;line-height:1.55;margin:0 0 18px;color:var(--ink)}
+  .dialog .d-btns{display:flex;justify-content:flex-end;gap:10px}
+
+  /* 编辑弹窗 */
+  .edit-overlay{
+    position:fixed;inset:0;background:rgba(20,26,40,.42);backdrop-filter:blur(3px);
+    display:none;align-items:center;justify-content:center;z-index:34;
+  }
+  .edit-overlay.open{display:flex}
+  .edit-dlg{
+    background:var(--card);border-radius:18px;padding:20px;min-width:320px;max-width:520px;
+    box-shadow:var(--shadow);width:90vw;
+  }
+  .edit-dlg h3{margin:0 0 12px;font-size:17px}
+  .edit-dlg textarea{width:100%;min-height:80px;resize:vertical;border:1px solid var(--line);border-radius:12px;padding:12px;font-family:inherit;font-size:15px;outline:none;line-height:1.55}
+  .edit-dlg textarea:focus{border-color:var(--brand)}
+  .edit-dlg .efields{margin-top:12px;display:flex;flex-direction:column;gap:10px}
+  .efield label{font-size:12px;color:var(--sub);display:block;margin-bottom:4px}
+  .efield input,.efield select{width:100%;padding:8px 11px;border:1px solid var(--line);border-radius:10px;font-size:14px;outline:none;background:#fafbfc}
+  .efield input:focus,.efield select:focus{border-color:var(--brand);background:#fff}
+  .edit-dlg .etimes{font-size:11px;color:var(--sub);margin-top:10px;text-align:right}
+
+  /* 转类型弹窗 */
+  .convert-overlay{
+    position:fixed;inset:0;background:rgba(20,26,40,.42);backdrop-filter:blur(3px);
+    display:none;align-items:center;justify-content:center;z-index:36;
+  }
+  .convert-overlay.open{display:flex}
+  .conv-dlg{
+    background:var(--card);border-radius:18px;padding:20px;min-width:300px;max-width:480px;
+    box-shadow:var(--shadow);width:92vw;
+  }
+  .conv-dlg h3{margin:0 0 6px;font-size:17px}
+  .conv-dlg .csub{font-size:13px;color:var(--sub);margin:0 0 14px}
+  .ctype-list{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:14px}
+  .ctype{
+    border:1.5px solid var(--line);border-radius:12px;padding:10px 16px;font-size:14px;
+    cursor:pointer;transition:.15s;background:#fff;
+  }
+  .ctype.on{border-color:var(--brand);background:var(--brand-soft);color:var(--brand);font-weight:600}
+  .ctype-desc{font-size:12px;color:var(--sub);margin-top:4px}
+  .conv-extra{border-top:1px solid var(--line);padding-top:14px;display:none}
+  .conv-extra.show{display:block}
+
+  /* 导出面板 */
+  .export-panel{
+    position:fixed;inset:0;background:rgba(20,26,40,.42);backdrop-filter:blur(3px);
+    display:none;align-items:center;justify-content:center;z-index:33;
+  }
+  .export-panel.open{display:flex}
+  .exp-dlg{
+    background:var(--card);border-radius:18px;padding:20px;min-width:340px;max-width:540px;
+    box-shadow:var(--shadow);width:94vw;
+  }
+  .exp-dlg h3{margin:0 0 12px;font-size:17px}
+  .exp-dlg textarea{width:100%;min-height:200px;max-height:50vh;resize:vertical;
+    border:1px solid var(--line);border-radius:12px;padding:14px;font-family:inherit;
+    font-size:14px;outline:none;line-height:1.7;tab-size:2;
+  }
+  .exp-dlg textarea:focus{border-color:var(--brand)}
+
+  /* 新增分类输入 */
+  .inline-add{
+    display:none;border-radius:20px;overflow:hidden;
+    border:1.5px solid var(--brand);box-shadow:0 0 0 2px var(--brand-soft);
+  }
+  .inline-add.show{display:inline-flex;align-items:center}
+  .inline-add input{
+    border:none;outline:none;background:none;padding:6px 10px;font-size:13px;
+    min-width:80px;font-family:inherit;
+  }
+
+  /* 勾选模式下的批量操作栏 */
+  .batch-bar{
+    position:sticky;bottom:0;background:var(--card);border-top:1.5px solid var(--line);
+    border-radius:14px 14px 0 0;padding:10px 16px;margin:0 -16px;
+    display:none;align-items:center;justify-content:space-between;z-index:10;
+  }
+  .batch-bar.show{display:flex}
 </style>
 </head>
 <body>
   <div class="wrap">
-    <header><span class="dot"></span><h1>灵感极速录入</h1></header>
+    <header><span class="dot"></span><h1>灵感极速录入 · v2</h1></header>
     <p class="hint">
       右下角悬浮按钮随时捕获，或按 <kbd>N</kbd> 直接唤起。<br>
-      输入后按 <kbd>Enter</kbd> 立即保存并清空，可连续速记；<kbd>Esc</kbd> 收起。
+      输入后按 <kbd>Enter</kbd> 立即保存并清空，可连续速记；<kbd>Esc</kbd> 退出（有内容会提示保存）。<br>
+      点击记录可编辑；可多选导出文本；可转换为普通记录。
     </p>
+
+    <!-- 工具栏 -->
+    <div class="toolbar" id="toolbar">
+      <div class="toolbar-left">
+        <label class="cb"><input type="checkbox" id="selAll" /> 全选</label>
+        <span id="selCount"></span>
+      </div>
+      <div style="display:flex;gap:8px">
+        <button class="btn-sm primary" id="expBtn" disabled>📤 导出所选</button>
+        <button class="btn-sm danger" id="convBtn" disabled>🔀 转为普通记录</button>
+      </div>
+    </div>
+
     <div class="stream" id="stream"></div>
+  </div>
+
+  <!-- 批量操作栏 -->
+  <div class="batch-bar" id="batchBar">
+    <span style="font-size:13px;color:var(--sub)">已选 <strong id="batchCount">0</strong> 条</span>
+    <div style="display:flex;gap:8px">
+      <button class="btn-sm primary" id="batchExp">📤 导出文本</button>
+      <button class="btn-sm" id="batchConv">🔀 转换类型</button>
+    </div>
   </div>
 
   <button class="fab" id="fab" title="捕获灵感 (N)">＋<span class="badge" id="badge" hidden>0</span></button>
 
+  <!-- 捕获层 -->
   <div class="overlay" id="overlay">
     <div class="sheet">
       <div class="bar"></div>
       <div class="label">捕获一条灵感 · 自动标记类型「灵感」</div>
       <textarea id="ta" placeholder="脑子里刚冒出来的想法…（Enter 保存，Shift+Enter 换行）"></textarea>
-      <div class="chips" id="chips"></div>
+      <div class="chips-row" id="chipsRow">
+        <div id="chips"></div>
+        <button class="add-cat" id="addCatBtn">＋ 分类</button>
+        <span class="inline-add" id="inlineAdd"><input id="newCatInput" placeholder="新分类名" /></span>
+      </div>
       <div class="row">
-        <span class="tip"><kbd>Enter</kbd> 保存 · <kbd>Esc</kbd> 完成</span>
-        <span>
-          <button class="btn ghost" id="done">完成</button>
+        <span class="tip"><kbd>Enter</kbd> 保存 · <kbd>Esc</kbd> 退出</span>
+        <div class="btn-group">
+          <button class="btn exit" id="exitBtn">退出</button>
           <button class="btn primary" id="save" style="margin-left:8px">保存</button>
-        </span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 退出确认 -->
+  <div class="confirm-mask" id="confirmMask">
+    <div class="dialog">
+      <p id="confirmMsg">有未保存的内容，要丢弃吗？</p>
+      <div class="d-btns">
+        <button class="btn exit" id="confirmDiscard">丢弃</button>
+        <button class="btn primary" id="confirmSave">先保存再退出</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 编辑弹窗 -->
+  <div class="edit-overlay" id="editOverlay">
+    <div class="edit-dlg">
+      <h3 id="editTitle">编辑记录</h3>
+      <textarea id="editTa"></textarea>
+      <div class="efields" id="editFields"></div>
+      <div class="etimes" id="editTimes"></div>
+      <div style="text-align:right;margin-top:14px;display:flex;justify-content:flex-end;gap:8px">
+        <button class="btn exit" id="editCancel">取消</button>
+        <button class="btn primary" id="editOk">保存修改</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 转类型弹窗 -->
+  <div class="convert-overlay" id="convOverlay">
+    <div class="conv-dlg">
+      <h3>转为普通记录</h3>
+      <p class="csub">选择目标类型，补充该类型所需的字段：</p>
+      <div class="ctype-list" id="typeList"></div>
+      <div class="conv-extra" id="convExtra"></div>
+      <div style="text-align:right;margin-top:16px;display:flex;justify-content:flex-end;gap:8px">
+        <button class="btn exit" id="convCancel">取消</button>
+        <button class="btn primary" id="convOk">转换</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 导出面板 -->
+  <div class="export-panel" id="exportPanel">
+    <div class="exp-dlg">
+      <h3>导出所选灵感</h3>
+      <textarea id="expTa" placeholder="选中的灵感将在此显示…"></textarea>
+      <div style="text-align:right;margin-top:12px;display:flex;justify-content:flex-end;gap:8px">
+        <button class="btn exit" id="expClose">关闭</button>
+        <button class="btn primary" id="expCopy">复制到剪贴板</button>
       </div>
     </div>
   </div>
@@ -134,99 +338,292 @@
 
 <script>
 (function(){
-  const KEY='sparkbook_inspiration_proto';
-  const CATS=['生活','工作','项目','随手'];
+  const KEY='sparkbook_inspiration_proto_v2';
+  const CATS_KEY='sparkbook_insp_cats_v2';
+  const DEF_CATS=['生活','工作','项目','随手'];
+  // 目标类型定义（转普通记录时需要补的字段）
+  const TYPE_DEFS={
+    note:{label:'杂项',fields:[]},
+    task:{label:'任务',fields:[
+      {key:'dueDate',label:'截止日期',type:'date',placeholder:'可选'}
+    ]},
+    ledger:{label:'账本',fields:[
+      {key:'amount',label:'金额（¥）',type:'number',placeholder:'如 -29.5 或 150'},
+      {key:'direction',label:'收支方向',type:'select',options:[{v:'',l:'请选择'},{v:'income',l:'收入'},{v:'expense',l:'支出'}]}
+    ]},
+    meeting:{label:'会议',fields:[
+      {key:'meetingDate',label:'会议日期',type:'date',placeholder:'可选'}
+    ]}
+  };
+
   let items=load();
-  let picked=null; // 当前选中的分类
+  let cats=loadCats();
+  let picked=null;
+  let selIds=new Set(); // 多选 ID
+  let editingId=null;   // 正在编辑的 ID
 
   const $=id=>document.getElementById(id);
-  const stream=$('stream'), fab=$('fab'), badge=$('badge'),
-        overlay=$('overlay'), ta=$('ta'), chips=$('chips'),
-        toast=$('toast'), toastMsg=$('toastMsg');
+  const stream=$('stream'),fab=$('fab'),badge=$('badge'),
+        overlay=$('overlay'),ta=$('ta'),
+        chips=$('chipsRow'),chipsInner=$('chips'),
+        addCatBtn=$('addCatBtn'),inlineAdd=$('inlineAdd'),newCatInput=$('newCatInput'),
+        exitBtn=$('exitBtn'),saveBtn=$('save'),
+        confirmMask=$('confirmMask'),confirmMsg=$('confirmMsg'),
+        confirmDiscard=$('confirmDiscard'),confirmSave=$('confirmSave'),
+        editOverlay=$('editOverlay'),editTa=$('editTa'),
+        editFields=$('editFields'),editTimes=$('editTimes'),
+        editCancel=$('editCancel'),editOk=$('editOk'),
+        convOverlay=$('convOverlay'),typeList=$('typeList'),convExtra=$('convExtra'),
+        convCancel=$('convCancel'),convOk=$('convOk'),
+        exportPanel=$('exportPanel'),expTa=$('expTa'),
+        expClose=$('expClose'),expCopy=$('expCopy'),
+        toolbar=$('toolbar'),selAll=$('selAll'),selCount=$('selCount'),
+        expBtn=$('expBtn'),convBtn=$('convBtn'),
+        batchBar=$('batchBar'),batchCount=$('batchCount'),
+        batchExp=$('batchExp'),batchConv=$('batchConv'),
+        toast=$('toast'),toastMsg=$('toastMsg');
 
-  // 渲染分类 chips
-  CATS.forEach(c=>{
-    const el=document.createElement('div');
-    el.className='chip';el.textContent=c;
-    el.onclick=()=>{picked=(picked===c)?null:c;renderChips();};
-    chips.appendChild(el);
-  });
-  function renderChips(){
-    [...chips.children].forEach((el,i)=>el.classList.toggle('on',CATS[i]===picked));
+  // ── 分类管理 ───────────────────────────────
+  function renderCats(){
+    chipsInner.innerHTML='';
+    cats.forEach(c=>{
+      const el=document.createElement('div');
+      el.className='chip';el.textContent=c;
+      el.onclick=()=>{picked=(picked===c)?null:c;renderCats();};
+      if(picked===c)el.classList.add('on');
+      chipsInner.appendChild(el);
+    });
+  }
+  function loadCats(){try{return JSON.parse(localStorage.getItem(CATS_KEY))||DEF_CATS.slice()}catch(e){return DEF_CATS.slice()}}
+  function saveCats(){localStorage.setItem(CATS_KEY,JSON.stringify(cats))}
+  function addCat(name){
+    name=name.trim();if(!name)return false;
+    if(cats.includes(name)){showToast('分类已存在');return false;}
+    cats.push(name);saveCats();renderCats();return true;
   }
 
+  // 新增分类 UI
+  addCatBtn.onclick=()=>{
+    inlineAdd.classList.add('show');newCatInput.value='';newCatInput.focus();
+  };
+  newCatInput.addEventListener('keydown',e=>{
+    if(e.key==='Enter'){e.preventDefault();if(addCat(newCatInput.value)){inlineAdd.classList.remove('show');}}
+    if(e.key==='Escape'){inlineAdd.classList.remove('show');}
+  });
+  newCatInput.addEventListener('blur',()=>setTimeout(()=>inlineAdd.classList.remove('show'),120));
+
+  // ── 存储 ───────────────────────────────────
   function load(){try{return JSON.parse(localStorage.getItem(KEY))||[]}catch(e){return[]}}
   function persist(){localStorage.setItem(KEY,JSON.stringify(items))}
 
-  function nowStr(){
-    const d=new Date(),p=n=>String(n).padStart(2,'0');
-    return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+  function nowISO(){return new Date().toISOString()}
+  function fmtTime(iso){
+    const d=new Date(iso),p=n=>String(n).padStart(2,'0');
+    return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+  }
+  function shortTime(iso){
+    const d=new Date(iso),p=n=>String(n).padStart(2,'0');
+    return `${p(d.getHours())}:${p(d.getMinutes())}`;
   }
 
+  // ── 渲染列表 ───────────────────────────────
   function render(){
     if(!items.length){
       stream.innerHTML='<div class="empty">还没有灵感。<br>点右下角的 ＋ 捕获第一条吧。</div>';
     }else{
       stream.innerHTML='';
       items.forEach(it=>{
-        const d=document.createElement('div');d.className='item';
-        d.innerHTML=`<button class="del" data-id="${it.id}">✕</button>
-          <div class="time">${it.time}</div>
-          <div class="body"></div>${it.cat?`<span class="tag">${it.cat}</span>`:''}`;
+        const d=document.createElement('div');d.className='item'+(selIds.has(it.id)?' sel':'');
+        const checked=selIds.has(it.id)?'checked':'';
+        const edited=it.updated&&it.updated!==it.created?'<span class="edited">(已编辑)</span>':'';
+        d.innerHTML=`<input class="check" type="checkbox" data-id="${it.id}" ${checked}/>
+          <div class="meta"><span class="ts">${fmtTime(it.created)}</span>${edited}</div>
+          <div class="body"></div>${it.cat?`<span class="tag">${escHtml(it.cat)}</span>`:''}
+          <div class="actions">
+            <button data-id="${it.id}" data-action="edit" title="编辑">✏️</button>
+            <button data-id="${it.id}" data-action="conv" title="转为普通记录">🔀</button>
+            <button data-id="${it.id}" data-action="del" title="删除">✕</button>
+          </div>`;
         d.querySelector('.body').textContent=it.text;
         stream.appendChild(d);
       });
     }
-    const n=items.length;
-    badge.textContent=n;badge.hidden=n===0;
+    badge.textContent=items.length;badge.hidden=!items.length;
+    updateSelUI();
+  }
+  function escHtml(s){const d=document.createElement('div');d.textContent=s;return d.innerHTML}
+
+  // ── 选择 / 批量操作 ─────────────────────────
+  stream.addEventListener('click',e=>{
+    const cb=e.target.closest('.check[data-id]');
+    if(cb){
+      const id=cb.dataset.id;if(cb.checked)selIds.add(id);else selIds.delete(id);updateSelUI();render();return;}
+    const act=e.target.closest('[data-action]');
+    if(!act)return;
+    const id=act.dataset.id,a=act.dataset.action;
+    if(a==='del'){items=items.filter(x=>x.id!==id);selIds.delete(id);persist();render();}
+    else if(a==='edit'){openEdit(id);}
+    else if(a==='conv'){openConvert([id]);}
+  });
+
+  selAll.onchange=()=>{
+    if(selAll.checked) items.forEach(x=>selIds.add(x.id));
+    else selIds.clear();
+    render();
+  };
+  function updateSelUI(){
+    const n=selIds.size;
+    selCount.textContent=n?`已选 ${n} 条`:'';
+    expBtn.disabled=!n;convBtn.disabled=!n;
+    batchCount.textContent=n;
+    batchBar.classList.toggle('show',n>0);
   }
 
-  function showToast(msg){
-    toastMsg.textContent=msg;toast.classList.add('show');
-    clearTimeout(showToast._t);
-    showToast._t=setTimeout(()=>toast.classList.remove('show'),1400);
-  }
+  // ── 捕获层 ─────────────────────────────────
+  function openSheet(){overlay.classList.add('open');setTimeout(()=>ta.focus(),60)}
+  function closeSheet(){overlay.classList.remove('open');ta.value='';picked=null;renderCats()}
 
-  function openSheet(){
-    overlay.classList.add('open');
-    setTimeout(()=>ta.focus(),60);
-  }
-  function closeSheet(){
-    overlay.classList.remove('open');ta.value='';picked=null;renderChips();
-  }
+  exitBtn.onclick=()=>{if(ta.value.trim()){showConfirm();}else closeSheet();};
 
   function save(){
-    const text=ta.value.trim();
-    if(!text){ta.focus();return;}
-    items.unshift({id:Date.now()+''+Math.random().toString(36).slice(2,6),text,cat:picked,time:nowStr()});
-    persist();render();
-    showToast('已捕获 · '+nowStr());
-    ta.value='';picked=null;renderChips();
-    ta.focus(); // 保持打开，连续速记
+    const text=ta.value.trim();if(!text){ta.focus();return;}
+    items.unshift({id:Date.now()+''+Math.random().toString(36).slice(2,6),
+      text,cat:picked,type:'inspiration',created:nowISO(),updated:null});
+    persist();render();showToast('已捕获 · '+shortTime(items[0].created));
+    ta.value='';picked=null;renderCats();ta.focus();
   }
 
-  // 事件
-  fab.onclick=openSheet;
-  $('save').onclick=save;
-  $('done').onclick=closeSheet;
-  overlay.onclick=e=>{if(e.target===overlay)closeSheet();};
   ta.addEventListener('keydown',e=>{
     if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();save();}
-    if(e.key==='Escape'){closeSheet();}
+    if(e.key==='Escape'){exitBtn.click();}
   });
-  stream.addEventListener('click',e=>{
-    const b=e.target.closest('.del');if(!b)return;
-    items=items.filter(x=>x.id!==b.dataset.id);persist();render();
-  });
+  overlay.onclick=e=>{if(e.target===overlay)exitBtn.click();};
+  fab.onclick=openSheet;
+
+  // ── 确认弹窗 ──────────────────────────────
+  function showConfirm(msg){
+    if(msg)confirmMsg.textContent=msg;
+    confirmMask.classList.add('open');
+  }
+  confirmDiscard.onclick=()=>{confirmMask.classList.remove('open');closeSheet();};
+  confirmSave.onclick=()=>{confirmMask.classList.remove('open');save();};
+
+  // ── 编辑 ──────────────────────────────────
+  function openEdit(id){
+    const it=items.find(x=>x.id===id);if(!it)return;editingId=id;
+    editTitle.textContent='编辑灵感';
+    editTa.value=it.text||'';
+    editFields.innerHTML='';
+    editTimes.innerHTML=`创建：${fmtTime(it.created)}${it.updated?'<br>修改：'+fmtTime(it.updated):''}`;
+    editOverlay.classList.add('open');
+  }
+  editCancel.onclick=()=>{editingId=null;editOverlay.classList.remove('open');};
+  editOk.onclick=()=>{
+    if(!editingId)return;
+    const it=items.find(x=>x.id===editingId);
+    if(!it)return;
+    it.text=editTa.value.trim()||it.text;
+    it.updated=nowISO();
+    persist();render();editingId=null;editOverlay.classList.remove('open');
+    showToast('已更新 · '+shortTime(it.updated));
+  };
+
+  // ── 转类型 ────────────────────────────────
+  let convTargetType=null;
+  function openConvert(ids){
+    convTargetType=ids;
+    typeList.innerHTML='';
+    Object.entries(TYPE_DEFS).forEach(([k,v])=>{
+      const el=document.createElement('div');el.className='ctype';el.dataset.type=k;
+      el.innerHTML=`<div>${v.label}</div><div class="ctype-desc">${v.fields.length?v.fields.map(f=>f.label).join(' / '):'无需补充字段'}</div>`;
+      el.onclick=()=>{typeList.querySelectorAll('.ctype').forEach(x=>x.classList.remove('on'));el.classList.add('on');showConvExtra(k);};
+      typeList.appendChild(el);
+    });
+    convOverlay.classList.add('open');
+  }
+  function showConvExtra(typeKey){
+    const def=TYPE_DEFS[typeKey];if(!def)return;
+    if(!def.fields.length){convExtra.classList.remove('show');convExtra.innerHTML='';return;}
+    convExtra.classList.add('show');
+    let h='<p style="font-size:13px;color:var(--sub);margin:0 0 10px">补充「'+def.label+'」需要的字段：</p>';
+    def.fields.forEach(f=>{
+      h+=`<div style="margin-bottom:10px">
+        <label style="font-size:12px;color:var(--sub)">${f.label}</label>`;
+      if(f.type==='date') h+=`<br><input type="date" data-f="${f.key}" style="width:100%;padding:7px 10px;border:1px solid var(--line);border-radius:8px;font-size:14px"/>`;
+      else if(f.type==='number') h+=`<br><input type="number" step="0.01" data-f="${f.key}" placeholder="${f.placeholder||''}" style="width:100%;padding:7px 10px;border:1px solid var(--line);border-radius:8px;font-size:14px"/>`;
+      else if(f.type==='select'){
+        h+=`<br><select data-f="${f.key}" style="width:100%;padding:7px 10px;border:1px solid var(--line);border-radius:8px;font-size:14px">`;
+        f.options.forEach(o=>h+=`<option value="${o.v}">${o.l}</option>`);h+='</select>';
+      }
+      h+='</div>';
+    });
+    convExtra.innerHTML=h;
+  }
+  convCancel.onclick=()=>{convOverlay.classList.remove('open');convTargetType=null;};
+  convOk.onclick=()=>{
+    const chosen=typeList.querySelector('.ctype.on');if(!chosen){showToast('请选择目标类型');return;}
+    const targetType=chosen.dataset.type;
+    // 收集额外字段值
+    const extras={};
+    convExtra.querySelectorAll('[data-f]').forEach(inp=>extras[inp.dataset.f]=inp.value);
+    // 执行转换
+    convTargetType.forEach(id=>{
+      const idx=items.findIndex(x=>x.id===id);if(idx===-1)return;
+      const old=items[idx];
+      items[idx]={
+        ...old,
+        type:targetType,
+        convertedFrom:'inspiration',
+        updated:nowISO(),
+        ...extras,
+        _convertedAt:nowISO()
+      };
+    });
+    persist();selIds.clear();render();
+    convOverlay.classList.remove('open');convTargetType=null;
+    showToast(`已转为「${TYPE_DEFS[targetType].label}」`);
+  };
+  // 工具栏转类型按钮
+  convBtn.onclick=()=>{if(selIds.size)openConvert([...selIds]);};
+  batchConv.onclick=convBtn.onclick;
+
+  // ── 导出 ──────────────────────────────────
+  function openExport(ids){
+    const selected=items.filter(x=>ids.includes(x.id));
+    let text='';
+    selected.forEach((it,i)=>{
+      text+=`${i+1}. [${it.created?shortTime(it.created):'?'}]${it.cat?' ['+it.cat+']':''}\n`;
+      text+=`   ${it.text}\n\n`;
+    });
+    expTa.value=text.trim();
+    exportPanel.classList.add('open');
+  }
+  expClose.onclick=()=>exportPanel.classList.remove('open');
+  expCopy.onclick=()=>{
+    expTa.select();navigator.clipboard?.writeText(expTa.value);
+    showToast('已复制到剪贴板');
+  };
+  expBtn.onclick=()=>{if(selIds.size)openExport([...selIds]);};
+  batchExp.onclick=expBtn.onclick;
+
+  // ── 快捷键 ────────────────────────────────
   document.addEventListener('keydown',e=>{
     if(e.key==='n'||e.key==='N'){
       if(overlay.classList.contains('open'))return;
-      if(/INPUT|TEXTAREA/.test(document.activeElement.tagName))return;
+      if(/INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName))return;
       e.preventDefault();openSheet();
     }
-    if(e.key==='Escape'&&overlay.classList.contains('open'))closeSheet();
+    if(e.key==='Escape'){
+      if(editOverlay.classList.contains('open')){editCancel.click();return;}
+      if(convOverlay.classList.contains('open')){convCancel.click();return;}
+      if(exportPanel.classList.contains('open')){expClose.click();return;}
+      if(confirmMask.classList.contains('open')){confirmDiscard.click();return;}
+      if(overlay.classList.contains('open')){exitBtn.click();return;}
+    }
   });
 
+  // 初始化
+  renderCats();
   render();
 })();
 </script>
