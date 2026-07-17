@@ -128,7 +128,7 @@ def _cos_client():
 
 def cos_presign_url(method, key, expired=3600):
     client = _cos_client()
-    return client.get_presigned_url(method.upper(), key.lstrip('/'), COS_BUCKET, expired)
+    return client.get_presigned_url(COS_BUCKET, key.lstrip('/'), method.upper(), expired)
 
 
 @app.route('/api/asr/presign', methods=['POST', 'OPTIONS'])
