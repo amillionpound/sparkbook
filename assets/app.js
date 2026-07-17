@@ -221,22 +221,18 @@
       h += field('会议日期', `<input id="f-mdate" type="date" value="${esc(e.meetingDate || '')}" />`);
       h += field('纪要 / 正文', `<textarea id="f-body">${esc(e.body || '')}</textarea>`);
     } else if (type === 'ledger') {
-      // 账本：日期+时间均手输（不依赖控件），新建默认当前时刻
-      const now = new Date();
+      // 账本：日期+时间均手输（不依赖控件）；新建默认当前时刻，编辑显示已保存时刻
       const p2 = n => String(n).padStart(2, '0');
-      const defDate = existing ? '' : `${now.getFullYear()}-${p2(now.getMonth()+1)}-${p2(now.getDate())}`;
-      const defTime = existing ? '' : `${p2(now.getHours())}:${p2(now.getMinutes())}`;
-      const savedDate = (e.created ? new Date(e.created) : null);
-      const savedDateStr = savedDate && !isNaN(savedDate) ?
-        `${savedDate.getFullYear()}-${p2(savedDate.getMonth()+1)}-${p2(savedDate.getDate())}` : '';
-      const savedTimeStr = savedDate && !isNaN(savedDate) ?
-        `${p2(savedDate.getHours())}:${p2(savedDate.getMinutes())}` : '';
+      const base = (e.created ? new Date(e.created) : null);
+      const ref = (base && !isNaN(base)) ? base : new Date();
+      const dateStr = `${ref.getFullYear()}-${p2(ref.getMonth() + 1)}-${p2(ref.getDate())}`;
+      const timeStr = `${p2(ref.getHours())}:${p2(ref.getMinutes())}`;
       h += field('金额 (¥)', `<input id="f-amt" type="number" step="0.01" value="${e.amount != null ? e.amount : ''}" />`);
       h += field('方向', `<div class="seg" id="f-dir">
         <button type="button" data-d="out" class="${e.direction !== 'in' ? 'on' : ''}">支出</button>
         <button type="button" data-d="in" class="${e.direction === 'in' ? 'on' : ''}">收入</button></div>`);
-      h += field('日期', `<input id="f-ldate" placeholder="YYYY-MM-DD" value="${esc(defDate || savedDateStr)}" />`);
-      h += field('时间', `<input id="f-ltime" placeholder="HH:mm" value="${esc(defTime || savedTimeStr)}" />`);
+      h += field('日期', `<input id="f-ldate" placeholder="YYYY-MM-DD" value="${esc(dateStr)}" />`);
+      h += field('时间', `<input id="f-ltime" placeholder="HH:mm" value="${esc(timeStr)}" />`);
       h += field('备注', `<input id="f-body" value="${esc(e.body || '')}" />`);
     } else if (type === 'inspiration') {
       h += field('灵感内容', `<textarea id="f-body">${esc(e.body || '')}</textarea>`);
@@ -285,23 +281,17 @@
       patch.amount = parseFloat($('#f-amt').value) || 0;
       patch.direction = ($('#f-dir').querySelector('.on') || {}).dataset?.d || 'out';
       const dStr = ($('#f-ldate')?.value || '').trim();
-      const tStr = ($('#f-ltime')?.value || '').trim();
-      if (dStr) {
-        // 校验日期格式 YYYY-MM-DD
-        if (!/^\d{4}-\d{2}-\d{2}$/.test(dStr)) { toast('日期格式应为 YYYY-MM-DD'); return null; }
-        const dt = new Date(dStr + 'T' + (tStr || '00:00'));
-        if (isNaN(dt)) { toast('日期不合法'); return null; }
-        if (!editingId) patch.created = dt.toISOString();
-        // 若有手输时间且编辑已有记录，也更新 created
-        if (editingId && tStr) {
-          const tParts = tStr.split(':');
-          dt.setHours(parseInt(tParts[0], 10) || 0, parseInt(tParts[1], 10) || 0);
-          patch.created = dt.toISOString();
-        }
-      } else if (!editingId) {
-        // 新建未填日期 → 用当前时刻
-        patch.created = new Date().toISOString();
-      }
+      const tStr = ($('#f-ltime')?.value || '').trim() || '00:00';
+      // 校验日期 YYYY-MM-DD
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(dStr)) { toast('日期格式应为 YYYY-MM-DD'); return null; }
+      // 校验时间 HH:mm
+      if (!/^\d{1,2}:\d{2}$/.test(tStr)) { toast('时间格式应为 HH:mm'); return null; }
+      const [hh, mm] = tStr.split(':').map(n => parseInt(n, 10));
+      if (hh > 23 || mm > 59) { toast('时间不合法（时 0-23，分 0-59）'); return null; }
+      const dt = new Date(dStr + 'T' + String(hh).padStart(2, '0') + ':' + String(mm).padStart(2, '0') + ':00');
+      if (isNaN(dt)) { toast('日期或时间不合法'); return null; }
+      // 账本的日期时间即记录时刻，存入 created（新建与编辑一致）
+      patch.created = dt.toISOString();
     } else if (type === 'inspiration') {
       if (!editingId) patch.capturedAt = new Date().toISOString();
     }
@@ -357,7 +347,14 @@
       if (!pw) { $('#lock-error').textContent = '请输入主密码'; return; }
       doUnlock(pw, true);
     };
-    $('#password').addEventListener('keydown', e => { if (e.key === 'Enter') $('#unlock-btn').click(); });
+    $('#password').addEventListener('keydown', e => {
+      if ((e.key === 'Enter' || e.keyCode === 13) && !e.isComposing) {
+        e.preventDefault();
+        const pw = $('#password').value;
+        if (!pw) { $('#lock-error').textContent = '请输入主密码'; return; }
+        doUnlock(pw, true);
+      }
+    });
 
     $('#lock-btn').onclick = () => {
       store.clearSession(); store.lock();
