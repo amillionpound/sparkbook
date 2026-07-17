@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#1f2937" />
   <title>Sparkbook · 灵感簿</title>
   <link rel="manifest" href="manifest.webmanifest" />
-  <link rel="stylesheet" href="assets/styles.css?v=20260717e" />
+  <link rel="stylesheet" href="assets/styles.css?v=20260717f" />
 </head>
 <body>
   <!-- 解锁页 -->
@@ -116,12 +116,67 @@
     </div>
   </div>
 
+  <!-- 日报助手 弹层 -->
+  <div id="daily" class="modal hidden">
+    <div class="modal-card wide">
+      <div class="modal-head">
+        <h3>日报助手</h3>
+        <div class="seg" id="daily-tabs">
+          <button type="button" data-tab="gen" class="on">生成日报</button>
+          <button type="button" data-tab="style">风格档案</button>
+        </div>
+        <button id="daily-close" class="icon-btn">✕</button>
+      </div>
+      <div class="modal-body">
+        <!-- 生成 -->
+        <div id="daily-gen" class="daily-pane">
+          <div class="daily-row">
+            <label>日期</label>
+            <input id="daily-date" type="date" />
+            <button id="daily-selall" class="mini-btn" title="全选">全选</button>
+            <button id="daily-selnone" class="mini-btn" title="清空">清空</button>
+            <span id="daily-selcount" class="muted small"></span>
+          </div>
+          <div id="daily-checklist" class="daily-checklist"></div>
+          <div class="field">
+            <label>追加素材（可粘贴流水账 / 自由记录，与勾选项合并）</label>
+            <textarea id="daily-paste" placeholder="例如：今天和厂商确认了 OB 迁移方案，预计下周灰度。"></textarea>
+          </div>
+          <div class="field">
+            <label>补充背景（本篇临时，不保存、不进入风格进化）</label>
+            <textarea id="daily-bg" placeholder="如对当天日报的特别要求、需强调的风险等"></textarea>
+          </div>
+          <div class="daily-row">
+            <button id="daily-gen-btn" class="btn btn-primary">生成日报</button>
+            <span class="muted small">勾选 → 生成 → 可编辑 → 复制 / 修改</span>
+          </div>
+          <div class="field">
+            <label>生成结果（可编辑）</label>
+            <textarea id="daily-result" class="textout-area"></textarea>
+          </div>
+          <div class="daily-row">
+            <button id="daily-copy" class="btn">复制</button>
+            <button id="daily-revise" class="btn btn-primary">修改（采纳 + 进化）</button>
+          </div>
+        </div>
+        <!-- 风格档案 -->
+        <div id="daily-style" class="daily-pane hidden">
+          <p class="muted small">AI 写日报的偏好记忆，随库加密同步。由「修改」自动进化，也可手动编辑。基底为内置种子人设，无需修改。</p>
+          <div class="field"><label>术语表（遇到这些词请保留 / 优先使用，每行一个）</label><textarea id="sp-terms" class="sp-area"></textarea></div>
+          <div class="field"><label>风格要点（措辞、结构、详略，每行一条）</label><textarea id="sp-rules" class="sp-area"></textarea></div>
+          <div class="field"><label>对照样例（初稿一行 / 终稿一行，空行分隔多组）</label><textarea id="sp-samples" class="sp-area"></textarea></div>
+          <div class="daily-row"><button id="sp-save" class="btn btn-primary">保存风格档案</button></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- 轻提示 -->
   <div id="toast" class="toast hidden"></div>
 
-  <script src="assets/crypto.js?v=20260717e"></script>
-  <script src="assets/store.js?v=20260717e"></script>
-  <script src="assets/app.js?v=20260717e"></script>
+  <script src="assets/crypto.js?v=20260717f"></script>
+  <script src="assets/store.js?v=20260717f"></script>
+  <script src="assets/app.js?v=20260717f"></script>
   <script>
     if ('serviceWorker' in navigator) {
       window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));

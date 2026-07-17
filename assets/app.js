@@ -5,6 +5,19 @@
   const $ = sel => document.querySelector(sel);
   const TYPES = window.SparkTypes;
   const TYPE_ORDER = window.SparkTypeOrder;
+  // 与 store.js 同源，重复声明（store 内部常量未导出）
+  const API_BASE = 'https://1256784020-0i70k3at89.ap-guangzhou.tencentscf.com';
+  // 日报助手冷启动种子（人设基底，随应用内置，对应 日报助手.txt）
+  const DAILY_SEED = `我是银行的公司经营管理平台、同业经营管理平台的项目经理，我负责需求跟进、成本优化与系统运维，还要负责对应的外包人员管理。这两个系统内有对应的集市模块（对公集市、同业集市），两个系统本身用的是oceanbase数据库的oracle模式，集市用的是星环TDH数据库。
+你是我的对公、同业经营管理平台项目经理助理。
+
+请根据我提供的流水账，生成精简日报：全文可复制，无特殊格式，段落间不留空行，每篇2-4点，聚焦项目管理核心动作（进度、风险、资源、验收）。除非我主动提及，否则禁止出现“智能表格”等相关字眼。
+
+请长期记忆我的工作语境，包括但不限于：需求、经营平台埋点、厂商对接、成本管控、VP流程、绩效重算、系统画像等词汇。
+
+我会不定期录入带日期的流水账，请你按日期归档；支持我随时生成当天或回溯历史日期的日报。
+
+此外，我会偶尔发送我最终发给领导的正式日报给你。请你分析这些正式版本与我初稿的差异（如措辞更官方、更聚焦结果、删减过程细节等），并在后续生成中自动向我的正式发文风格靠拢。`;
 
   let cur = { type: 'all', cat: '', q: '' };
   let editingId = null;
@@ -392,6 +405,191 @@
     toast('已下载 sparkbook-export.' + ext);
   }
 
+  // ---------- 日报助手（P4） ----------
+  let dailyLast = null; // { generated, date, material }
+
+  function fmtDateOnly(iso) { return (iso || '').slice(0, 10); }
+
+  function dailyEntryLine(e) {
+    if (e.type === 'ledger') {
+      const a = (Number(e.amount) || 0).toFixed(2);
+      const sign = e.direction === 'in' ? '+' : '-';
+      return `- [账本] ${sign}¥${a} ${e.body || ''}`;
+    }
+    if (e.type === 'task') {
+      return `- [任务] ${e.title || ''}${e.dueDate ? `（截止 ${e.dueDate}）` : ''}${e.done ? '（已完成）' : ''}：${e.body || ''}`;
+    }
+    if (e.type === 'meeting') {
+      return `- [会议] 参加：${e.title || ''}（${e.meetingDate || ''}）\n  ${e.body || ''}`;
+    }
+    if (e.type === 'inspiration') return `- [灵感] ${e.body || ''}`;
+    return `- ${e.body || e.title || ''}`;
+  }
+  function formatMaterial(entries) {
+    return entries.map(dailyEntryLine).join('\n');
+  }
+  function formatStyleProfile(sp) {
+    sp = sp || { terms: [], rules: [], samples: [] };
+    let s = '';
+    if (sp.terms && sp.terms.length) s += '术语表：' + sp.terms.join('、') + '\n';
+    if (sp.rules && sp.rules.length) s += '风格要点：\n' + sp.rules.map(r => '- ' + r).join('\n') + '\n';
+    if (sp.samples && sp.samples.length) {
+      s += '对照样例：\n';
+      sp.samples.forEach(x => { s += `- 初稿：${x.before || ''}\n  终稿：${x.after || ''}\n`; });
+    }
+    return s.trim() || '（暂无，按基底人设生成）';
+  }
+
+  async function callAI(action, messages, opts) {
+    opts = opts || {};
+    toast(action === 'evolve' ? 'AI 风格进化中…' : 'AI 生成中…');
+    try {
+      const resp = await fetch(API_BASE + '/api/ai', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action, messages,
+          max_tokens: opts.max_tokens || 2000,
+          temperature: opts.temperature != null ? opts.temperature : 0.3,
+        }),
+      });
+      const d = await resp.json().catch(() => ({}));
+      if (d.code !== 0) { toast('AI 失败：' + (d.msg || d.code)); return null; }
+      return d.text;
+    } catch (e) { toast('请求失败：' + (e.message || e)); return null; }
+  }
+
+  function renderDailyChecklist(dateStr) {
+    const box = $('#daily-checklist');
+    const items = store.list().filter(e => fmtDateOnly(e.created) === dateStr);
+    if (!items.length) {
+      box.innerHTML = '<div class="muted small">当天没有记录。可在「追加素材」粘贴流水账。</div>';
+      updateDailySelCount();
+      return;
+    }
+    box.innerHTML = items.map(e =>
+      `<label class="daily-check"><input type="checkbox" data-id="${e.id}" checked />
+        <span>${TYPES[e.type].icon} ${fmtDate(e.created)} · ${entrySummary(e)}</span></label>`
+    ).join('');
+    box.querySelectorAll('input').forEach(c => c.onchange = updateDailySelCount);
+    updateDailySelCount();
+  }
+  function updateDailySelCount() {
+    const n = document.querySelectorAll('#daily-checklist input[type=checkbox]:checked').length;
+    const total = document.querySelectorAll('#daily-checklist input[type=checkbox]').length;
+    $('#daily-selcount').textContent = `${n}/${total} 已选`;
+  }
+  function getDailySelected() {
+    const ids = [...document.querySelectorAll('#daily-checklist input[type=checkbox]:checked')].map(c => c.dataset.id);
+    return ids.map(id => store.get(id)).filter(Boolean);
+  }
+
+  async function dailyGenerate() {
+    const dateStr = $('#daily-date').value;
+    if (!dateStr) { toast('请选择日期'); return; }
+    const sel = getDailySelected();
+    const paste = ($('#daily-paste').value || '').trim();
+    let material = formatMaterial(sel);
+    if (paste) material += (material ? '\n' : '') + paste;
+    if (!material.trim()) { toast('请勾选条目或在「追加素材」粘贴'); return; }
+    const sp = store.styleProfile();
+    const sys = DAILY_SEED + '\n\n# 已习得的风格偏好（动态积累）\n' + formatStyleProfile(sp);
+    const bg = ($('#daily-bg').value || '').trim();
+    const user = `请基于以下 ${dateStr} 的素材生成当日精简日报。\n\n【素材】\n${material}` +
+      (bg ? `\n\n【补充背景 / 要求】\n${bg}` : '') +
+      `\n\n要求：全文可复制、无特殊格式、段落间不留空行、每篇2-4点、聚焦进度/风险/资源/验收；如有会议素材必须包含「参加：标题」。`;
+    const text = await callAI('generate', [{ role: 'system', content: sys }, { role: 'user', content: user }]);
+    if (text != null) {
+      $('#daily-result').value = text;
+      dailyLast = { generated: text, date: dateStr, material };
+      toast('已生成');
+    }
+  }
+  function dailyCopy() {
+    const t = $('#daily-result').value;
+    if (!t.trim()) { toast('没有可复制的内容'); return; }
+    navigator.clipboard?.writeText(t).then(() => toast('已复制'), () => toast('复制失败'));
+  }
+  function parseStyleJSON(text, fallback) {
+    try {
+      const m = text.match(/\{[\s\S]*\}/);
+      if (!m) return null;
+      const o = JSON.parse(m[0]);
+      return {
+        terms: Array.isArray(o.terms) ? o.terms : (fallback.terms || []),
+        rules: Array.isArray(o.rules) ? o.rules : (fallback.rules || []),
+        samples: Array.isArray(o.samples) ? o.samples : (fallback.samples || []),
+      };
+    } catch { return null; }
+  }
+  async function dailyRevise() {
+    const revised = $('#daily-result').value;
+    if (!revised.trim()) { toast('没有可采纳的内容'); return; }
+    // 无论有无差异，先采纳复制
+    navigator.clipboard?.writeText(revised).then(() => toast('已复制'), () => toast('复制失败'));
+    if (!dailyLast || revised.trim() === (dailyLast.generated || '').trim()) {
+      toast('无差异，仅复制');
+      return;
+    }
+    // 有差异 → reasoner 进化风格档案
+    const sp = store.styleProfile();
+    const msgs = [
+      { role: 'system', content: DAILY_SEED + '\n\n你是一位「写作风格进化器」。用户会给你 AI 初稿与其亲自修订后的终稿，请分析终稿相对初稿体现的正式发文偏好（措辞更官方、更聚焦结果、删减过程细节、术语使用、结构详略等），输出更新后的风格偏好档案。只输出一个 JSON，不要解释。' },
+      { role: 'user', content:
+        `日期：${dailyLast.date}\n\n【AI 初稿】\n${dailyLast.generated}\n\n【用户修订终稿】\n${revised}\n\n当前风格档案：\n${formatStyleProfile(sp)}\n\n请对比差异，提取用户的正式发文偏好，输出更新后的风格档案 JSON，严格格式：\n{"terms":["术语1"],"rules":["要点1"],"samples":[{"before":"初稿片段","after":"终稿片段"}]}\n新增项追加，重复项合并；samples 保留 2-4 组代表性对照。` }
+    ];
+    const out = await callAI('evolve', msgs, { temperature: 0.2, max_tokens: 1500 });
+    if (out == null) return;
+    const newSp = parseStyleJSON(out, sp);
+    if (newSp) {
+      store.saveStyleProfile(newSp);
+      await sync();
+      toast('风格档案已进化并保存');
+    } else {
+      toast('风格进化返回非 JSON，已复制终稿');
+    }
+  }
+
+  // 风格档案读写
+  function loadStyleUI() {
+    const sp = store.styleProfile() || { terms: [], rules: [], samples: [] };
+    $('#sp-terms').value = (sp.terms || []).join('\n');
+    $('#sp-rules').value = (sp.rules || []).join('\n');
+    $('#sp-samples').value = (sp.samples || []).map(s => (s.before || '') + '\n' + (s.after || '')).join('\n\n');
+  }
+  function saveStyleUI() {
+    const sp = {
+      terms: $('#sp-terms').value.split('\n').map(s => s.trim()).filter(Boolean),
+      rules: $('#sp-rules').value.split('\n').map(s => s.trim()).filter(Boolean),
+      samples: $('#sp-samples').value.split(/\n\s*\n/).map(g => {
+        const lines = g.split('\n').map(s => s.trim()).filter(Boolean);
+        if (lines.length < 2) return null;
+        return {
+          before: lines[0].replace(/^[-初稿：:]+/, ''),
+          after: lines[1].replace(/^[-终稿：:]+/, ''),
+        };
+      }).filter(Boolean),
+    };
+    store.saveStyleProfile(sp);
+    sync().then(() => toast('风格档案已保存'));
+  }
+
+  function openDaily() {
+    const t = new Date();
+    const p = n => String(n).padStart(2, '0');
+    $('#daily-date').value = `${t.getFullYear()}-${p(t.getMonth() + 1)}-${p(t.getDate())}`;
+    renderDailyChecklist($('#daily-date').value);
+    $('#daily-paste').value = ''; $('#daily-bg').value = ''; $('#daily-result').value = '';
+    dailyLast = null;
+    switchDailyTab('gen');
+    $('#daily').classList.remove('hidden');
+  }
+  function switchDailyTab(tab) {
+    $('#daily-tabs').querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.tab === tab));
+    $('#daily-gen').classList.toggle('hidden', tab !== 'gen');
+    $('#daily-style').classList.toggle('hidden', tab !== 'style');
+    if (tab === 'style') loadStyleUI();
+  }
+
   // ---------- 事件绑定 ----------
   function bind() {
     $('#unlock-btn').onclick = () => {
@@ -445,7 +643,16 @@
       renderExport();
     });
     $('#export-btn').onclick = openExport;
-    $('#daily-btn').onclick = () => toast('日报助手将在 P4 阶段接入');
+    $('#daily-btn').onclick = openDaily;
+    $('#daily-close').onclick = () => $('#daily').classList.add('hidden');
+    $('#daily-tabs').querySelectorAll('button').forEach(b => b.onclick = () => switchDailyTab(b.dataset.tab));
+    $('#daily-date').onchange = () => renderDailyChecklist($('#daily-date').value);
+    $('#daily-selall').onclick = () => { document.querySelectorAll('#daily-checklist input').forEach(c => c.checked = true); updateDailySelCount(); };
+    $('#daily-selnone').onclick = () => { document.querySelectorAll('#daily-checklist input').forEach(c => c.checked = false); updateDailySelCount(); };
+    $('#daily-gen-btn').onclick = dailyGenerate;
+    $('#daily-copy').onclick = dailyCopy;
+    $('#daily-revise').onclick = dailyRevise;
+    $('#sp-save').onclick = saveStyleUI;
 
     // 快捷键 N 唤起新增（已解锁时）
     document.addEventListener('keydown', e => {
@@ -457,6 +664,7 @@
       if (e.key === 'Escape') {
         if (!$('#reader').classList.contains('hidden')) { readingId = null; $('#reader').classList.add('hidden'); }
         else if (!$('#editor').classList.contains('hidden')) $('#editor').classList.add('hidden');
+        else if (!$('#daily').classList.contains('hidden')) $('#daily').classList.add('hidden');
       }
     });
   }
