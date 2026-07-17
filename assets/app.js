@@ -405,8 +405,93 @@
     toast('已下载 sparkbook-export.' + ext);
   }
 
-  // ---------- 日报助手（P4） ----------
+  // ---------- 账本汇总（P5） ----------
+  function openSummary() {
+    const items = store.list().filter(e => e.type === 'ledger');
+    let income = 0, expense = 0;
+    items.forEach(e => {
+      const a = Number(e.amount) || 0;
+      if (e.direction === 'in') income += a; else expense += a;
+    });
+    const net = income - expense;
+    $('#ls-totals').innerHTML =
+      `收入 <b class="amt-in">¥${income.toFixed(2)}</b> · 支出 <b class="amt-out">¥${expense.toFixed(2)}</b> ` +
+      `· 净额 <b>¥${net.toFixed(2)}</b> · 共 ${items.length} 笔`;
+    const byMonth = {};
+    items.forEach(e => {
+      const m = (e.created || '').slice(0, 7);
+      if (!m) return;
+      byMonth[m] = byMonth[m] || { in: 0, out: 0, n: 0 };
+      byMonth[m].n++;
+      byMonth[m][e.direction === 'in' ? 'in' : 'out'] += Number(e.amount) || 0;
+    });
+    $('#ls-month').innerHTML = Object.keys(byMonth).sort().map(m => {
+      const x = byMonth[m];
+      return `<div class="ls-row"><span>${m}</span><span class="amt-in">+¥${x.in.toFixed(2)}</span>` +
+        `<span class="amt-out">-¥${x.out.toFixed(2)}</span><span class="muted">${x.n}笔</span></div>`;
+    }).join('') || '<div class="muted small">暂无账本数据</div>';
+    const byCat = {};
+    items.forEach(e => {
+      const c = e.category || '未分类';
+      byCat[c] = byCat[c] || { in: 0, out: 0, n: 0 };
+      byCat[c].n++;
+      byCat[c][e.direction === 'in' ? 'in' : 'out'] += Number(e.amount) || 0;
+    });
+    $('#ls-cat').innerHTML = Object.keys(byCat).sort().map(c => {
+      const x = byCat[c];
+      return `<div class="ls-row"><span>#${esc(c)}</span><span class="amt-in">+¥${x.in.toFixed(2)}</span>` +
+        `<span class="amt-out">-¥${x.out.toFixed(2)}</span><span class="muted">${x.n}笔</span></div>`;
+    }).join('') || '<div class="muted small">暂无账本数据</div>';
+    $('#ledger-summary').classList.remove('hidden');
+  }
+
+  // ---------- 录音转写（P5） ----------
+  async function recTranscribe() {
+    const file = $('#rec-file').files[0];
+    if (!file) { toast('请先选择录音文件'); return; }
+    const ext = (file.name.split('.').pop() || 'm4a').toLowerCase();
+    $('#rec-status').textContent = '获取上传凭证…';
+    let presign;
+    try {
+      const r = await fetch(API_BASE + '/api/asr/presign', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ext }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (d.code !== 0) { toast('获取凭证失败：' + (d.msg || d.code)); $('#rec-status').textContent = ''; return; }
+      presign = d;
+    } catch (e) { toast('请求失败：' + (e.message || e)); $('#rec-status').textContent = ''; return; }
+    $('#rec-status').textContent = '上传中…';
+    try {
+      const up = await fetch(presign.url, { method: 'PUT', headers: { 'Content-Type': 'application/octet-stream' }, body: file });
+      if (!up.ok) { toast('上传失败 ' + up.status); $('#rec-status').textContent = ''; return; }
+    } catch (e) { toast('上传失败：' + (e.message || e)); $('#rec-status').textContent = ''; return; }
+    $('#rec-status').textContent = '云端转写中（可能需1-2分钟）…';
+    try {
+      const r = await fetch(API_BASE + '/api/asr/transcribe', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key: presign.key }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (d.code !== 0) { toast('转写失败：' + (d.msg || d.code)); $('#rec-status').textContent = ''; return; }
+      $('#rec-result').value = d.text || '';
+      $('#rec-save').disabled = !(d.text && d.text.trim());
+      $('#rec-status').textContent = '完成';
+    } catch (e) { toast('转写请求失败：' + (e.message || e)); $('#rec-status').textContent = ''; }
+  }
+  async function recSave() {
+    const text = $('#rec-result').value.trim();
+    if (!text) { toast('没有可保存的内容'); return; }
+    const now = defaultDateTime();
+    store.addEntry({ type: 'meeting', title: '会议录音纪要 ' + now.slice(0, 10), meetingDate: now, body: text });
+    await sync();
+    toast('已保存为会议记录');
+    $('#recorder').classList.add('hidden');
+  }
+
+  // ---------- 日报助手（P4 + 周报模式 P5） ----------
   let dailyLast = null; // { generated, date, material }
+  let dailyMode = 'day'; // day | week
 
   function fmtDateOnly(iso) { return (iso || '').slice(0, 10); }
 
@@ -458,11 +543,33 @@
     } catch (e) { toast('请求失败：' + (e.message || e)); return null; }
   }
 
-  function renderDailyChecklist(dateStr) {
+  function fmtYMD(d) {
+    const p = n => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+  }
+  function weekRange() {
+    const t = new Date();
+    const day = t.getDay(); // 0=周日 .. 6=周六
+    const diffToMon = (day === 0 ? -6 : 1 - day);
+    const mon = new Date(t); mon.setDate(t.getDate() + diffToMon); mon.setHours(0, 0, 0, 0);
+    const sun = new Date(mon); sun.setDate(mon.getDate() + 6);
+    return [fmtYMD(mon), fmtYMD(sun)];
+  }
+  function dailyRangeItems() {
+    if (dailyMode === 'week') {
+      const s = $('#daily-start').value, e = $('#daily-end').value;
+      if (!s || !e) return [];
+      return store.list().filter(x => { const d = fmtDateOnly(x.created); return d >= s && d <= e; });
+    }
+    const d = $('#daily-date').value;
+    if (!d) return [];
+    return store.list().filter(x => fmtDateOnly(x.created) === d);
+  }
+  function renderDailyChecklist() {
     const box = $('#daily-checklist');
-    const items = store.list().filter(e => fmtDateOnly(e.created) === dateStr);
+    const items = dailyRangeItems();
     if (!items.length) {
-      box.innerHTML = '<div class="muted small">当天没有记录。可在「追加素材」粘贴流水账。</div>';
+      box.innerHTML = '<div class="muted small">该范围没有记录。可在「追加素材」粘贴流水账。</div>';
       updateDailySelCount();
       return;
     }
@@ -484,8 +591,10 @@
   }
 
   async function dailyGenerate() {
-    const dateStr = $('#daily-date').value;
-    if (!dateStr) { toast('请选择日期'); return; }
+    const dateStr = dailyMode === 'week'
+      ? `${$('#daily-start').value} ~ ${$('#daily-end').value}`
+      : $('#daily-date').value;
+    if (!dateStr || dateStr === ' ~ ') { toast(dailyMode === 'week' ? '请选择起止日期' : '请选择日期'); return; }
     const sel = getDailySelected();
     const paste = ($('#daily-paste').value || '').trim();
     let material = formatMaterial(sel);
@@ -573,11 +682,20 @@
     sync().then(() => toast('风格档案已保存'));
   }
 
+  function switchDailyMode(mode) {
+    dailyMode = mode;
+    $('#daily-mode').querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.mode === mode));
+    $('#daily-dayrow').classList.toggle('hidden', mode !== 'day');
+    $('#daily-weekrow').classList.toggle('hidden', mode !== 'week');
+    renderDailyChecklist();
+  }
   function openDaily() {
     const t = new Date();
     const p = n => String(n).padStart(2, '0');
     $('#daily-date').value = `${t.getFullYear()}-${p(t.getMonth() + 1)}-${p(t.getDate())}`;
-    renderDailyChecklist($('#daily-date').value);
+    const [ws, we] = weekRange();
+    $('#daily-start').value = ws; $('#daily-end').value = we;
+    switchDailyMode('day');
     $('#daily-paste').value = ''; $('#daily-bg').value = ''; $('#daily-result').value = '';
     dailyLast = null;
     switchDailyTab('gen');
@@ -643,10 +761,19 @@
       renderExport();
     });
     $('#export-btn').onclick = openExport;
+    $('#summary-btn').onclick = openSummary;
+    $('#ls-close').onclick = () => $('#ledger-summary').classList.add('hidden');
     $('#daily-btn').onclick = openDaily;
     $('#daily-close').onclick = () => $('#daily').classList.add('hidden');
     $('#daily-tabs').querySelectorAll('button').forEach(b => b.onclick = () => switchDailyTab(b.dataset.tab));
-    $('#daily-date').onchange = () => renderDailyChecklist($('#daily-date').value);
+    $('#daily-mode').querySelectorAll('button').forEach(b => b.onclick = () => switchDailyMode(b.dataset.mode));
+    $('#daily-date').onchange = renderDailyChecklist;
+    $('#daily-start').onchange = renderDailyChecklist;
+    $('#daily-end').onchange = renderDailyChecklist;
+    $('#rec-btn').onclick = () => { $('#rec-result').value = ''; $('#rec-save').disabled = true; $('#rec-status').textContent = ''; $('#recorder').classList.remove('hidden'); };
+    $('#rec-close').onclick = () => $('#recorder').classList.add('hidden');
+    $('#rec-go').onclick = recTranscribe;
+    $('#rec-save').onclick = recSave;
     $('#daily-selall').onclick = () => { document.querySelectorAll('#daily-checklist input').forEach(c => c.checked = true); updateDailySelCount(); };
     $('#daily-selnone').onclick = () => { document.querySelectorAll('#daily-checklist input').forEach(c => c.checked = false); updateDailySelCount(); };
     $('#daily-gen-btn').onclick = dailyGenerate;
@@ -664,6 +791,8 @@
       if (e.key === 'Escape') {
         if (!$('#reader').classList.contains('hidden')) { readingId = null; $('#reader').classList.add('hidden'); }
         else if (!$('#editor').classList.contains('hidden')) $('#editor').classList.add('hidden');
+        else if (!$('#ledger-summary').classList.contains('hidden')) $('#ledger-summary').classList.add('hidden');
+        else if (!$('#recorder').classList.contains('hidden')) $('#recorder').classList.add('hidden');
         else if (!$('#daily').classList.contains('hidden')) $('#daily').classList.add('hidden');
       }
     });

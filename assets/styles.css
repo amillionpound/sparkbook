@@ -150,3 +150,12 @@ body {
 .sp-area { width: 100%; min-height: 70px; border: 1px solid var(--line); border-radius: 9px; padding: 9px 11px;
   font-family: inherit; font-size: 13px; outline: none; resize: vertical; line-height: 1.5; }
 .sp-area:focus { border-color: var(--primary); }
+
+/* 账本汇总 */
+.ls-totals { padding: 12px 14px; background: #f4f6fb; border-radius: 10px; font-size: 14px; margin-bottom: 14px; line-height: 1.8; }
+.ls-totals b { font-weight: 600; }
+.ls-h { margin: 14px 0 8px; font-size: 14px; color: var(--ink); }
+.ls-grid { display: flex; flex-direction: column; gap: 4px; }
+.ls-row { display: grid; grid-template-columns: 1.4fr 1fr 1fr 0.8fr; gap: 8px; padding: 8px 10px;
+  border: 1px solid var(--line); border-radius: 9px; font-size: 13px; align-items: center; }
+.ls-row > span:last-child { text-align: right; }

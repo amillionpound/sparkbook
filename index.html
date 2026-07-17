@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#1f2937" />
   <title>Sparkbook · 灵感簿</title>
   <link rel="manifest" href="manifest.webmanifest" />
-  <link rel="stylesheet" href="assets/styles.css?v=20260717f" />
+  <link rel="stylesheet" href="assets/styles.css?v=20260717g" />
 </head>
 <body>
   <!-- 解锁页 -->
@@ -49,6 +49,7 @@
         <div class="side-foot">
           <button id="export-btn" class="link-btn">导出</button>
           <button id="daily-btn" class="link-btn">日报</button>
+          <button id="summary-btn" class="link-btn">汇总</button>
         </div>
       </aside>
 
@@ -131,8 +132,21 @@
         <!-- 生成 -->
         <div id="daily-gen" class="daily-pane">
           <div class="daily-row">
+            <div class="seg" id="daily-mode">
+              <button type="button" data-mode="day" class="on">日报</button>
+              <button type="button" data-mode="week">周报</button>
+            </div>
+            <button id="rec-btn" class="mini-btn" title="录音转写">🎙</button>
+          </div>
+          <div class="daily-row" id="daily-dayrow">
             <label>日期</label>
             <input id="daily-date" type="date" />
+          </div>
+          <div class="daily-row hidden" id="daily-weekrow">
+            <label>起</label><input id="daily-start" type="date" />
+            <label>止</label><input id="daily-end" type="date" />
+          </div>
+          <div class="daily-row">
             <button id="daily-selall" class="mini-btn" title="全选">全选</button>
             <button id="daily-selnone" class="mini-btn" title="清空">清空</button>
             <span id="daily-selcount" class="muted small"></span>
@@ -171,12 +185,51 @@
     </div>
   </div>
 
+  <!-- 账本汇总 弹层 -->
+  <div id="ledger-summary" class="modal hidden">
+    <div class="modal-card wide">
+      <div class="modal-head"><h3>账本汇总</h3><button id="ls-close" class="icon-btn">✕</button></div>
+      <div class="modal-body">
+        <div id="ls-totals" class="ls-totals"></div>
+        <h4 class="ls-h">按月</h4>
+        <div id="ls-month" class="ls-grid"></div>
+        <h4 class="ls-h">按分类</h4>
+        <div id="ls-cat" class="ls-grid"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 录音转写 弹层 -->
+  <div id="recorder" class="modal hidden">
+    <div class="modal-card">
+      <div class="modal-head"><h3>🎙 录音转写</h3><button id="rec-close" class="icon-btn">✕</button></div>
+      <div class="modal-body">
+        <p class="muted small">选择录音文件（mp3/m4a/wav/flac/ogg/amr 等），上传到云端转写，生成加密的「会议」记录。临时音频转写后自动删除。</p>
+        <div class="field">
+          <input id="rec-file" type="file" accept="audio/*,.mp3,.m4a,.wav,.flac,.ogg,.amr" />
+        </div>
+        <div class="daily-row">
+          <button id="rec-go" class="btn btn-primary">开始转写</button>
+          <span id="rec-status" class="muted small"></span>
+        </div>
+        <div class="field">
+          <label>转写结果（可编辑）</label>
+          <textarea id="rec-result" class="textout-area"></textarea>
+        </div>
+      </div>
+      <div class="modal-foot">
+        <span class="spacer"></span>
+        <button id="rec-save" class="btn btn-primary" disabled>保存为会议记录</button>
+      </div>
+    </div>
+  </div>
+
   <!-- 轻提示 -->
   <div id="toast" class="toast hidden"></div>
 
-  <script src="assets/crypto.js?v=20260717f"></script>
-  <script src="assets/store.js?v=20260717f"></script>
-  <script src="assets/app.js?v=20260717f"></script>
+  <script src="assets/crypto.js?v=20260717g"></script>
+  <script src="assets/store.js?v=20260717g"></script>
+  <script src="assets/app.js?v=20260717g"></script>
   <script>
     if ('serviceWorker' in navigator) {
       window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
