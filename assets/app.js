@@ -332,18 +332,64 @@
     toast('已转换为' + TYPES[target].label);
   }
 
-  // ---------- 导出（基础版：当前列表 → Markdown / JSON） ----------
-  function exportText() {
-    const items = store.filter({ type: cur.type, category: cur.cat, q: cur.q });
-    let md = `# Sparkbook 导出（${fmtDate(new Date().toISOString())}）\n\n`;
-    let curT = '';
-    items.forEach(e => {
-      if (e.type !== curT) { curT = e.type; md += `\n## ${TYPES[e.type].label}\n`; }
-      const cat = e.category ? ` [${e.category}]` : '';
-      md += `- ${fmtDate(e.created)}${cat} ${entrySummary(e)}\n`;
+  // ---------- 导出（全库双格式：MD 人读/喂日报 + JSON 程序恢复） ----------
+  let exportFmt = 'md';
+  function buildExport(fmt) {
+    const items = store.list(); // 全库
+    if (fmt === 'json') {
+      return JSON.stringify(store.state, null, 2);
+    }
+    // Markdown：按 类型 → 分类 → 日期 排版
+    const now = fmtDate(new Date().toISOString());
+    let md = `# Sparkbook 导出（${now}）\n\n`;
+    TYPE_ORDER.forEach(type => {
+      const ofType = items.filter(e => e.type === type);
+      if (!ofType.length) return;
+      md += `## ${TYPES[type].icon} ${TYPES[type].label}\n`;
+      // 按分类分组（无分类归入 [未分类]）
+      const byCat = {};
+      ofType.forEach(e => {
+        const c = e.category || '未分类';
+        (byCat[c] = byCat[c] || []).push(e);
+      });
+      Object.keys(byCat).forEach(cat => {
+        md += `### [${cat}]\n`;
+        byCat[cat]
+          .slice()
+          .sort((a, b) => (a.created || '').localeCompare(b.created || ''))
+          .forEach(e => {
+            md += `- ${fmtDate(e.created)} · ${entrySummary(e)}\n`;
+          });
+      });
+      md += '\n';
     });
-    $('#textout-area').value = md;
+    return md.trim() + '\n';
+  }
+  function renderExport() {
+    $('#textout-area').value = buildExport(exportFmt);
+    $('#export-hint').textContent =
+      exportFmt === 'json' ? '全库 · JSON 整库（可程序恢复）' : '全库 · 按类型→分类→日期';
+  }
+  function openExport() {
+    exportFmt = 'md';
+    $('#export-fmt').querySelectorAll('button').forEach(x => x.classList.toggle('on', x.dataset.f === 'md'));
+    renderExport();
     $('#textout').classList.remove('hidden');
+  }
+  function copyExport() {
+    const ta = $('#textout-area'); ta.select();
+    navigator.clipboard?.writeText(ta.value).then(() => toast('已复制'), () => toast('复制失败'));
+  }
+  function downloadExport() {
+    const txt = $('#textout-area').value;
+    const ext = exportFmt === 'json' ? 'json' : 'md';
+    const blob = new Blob([txt], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = `sparkbook-export.${ext}`;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    toast('已下载 sparkbook-export.' + ext);
   }
 
   // ---------- 事件绑定 ----------
@@ -390,11 +436,15 @@
     $('#search').addEventListener('input', e => { cur.q = e.target.value.trim(); renderList(); });
 
     $('#textout-close').onclick = () => $('#textout').classList.add('hidden');
-    $('#textout-copy').onclick = () => {
-      const ta = $('#textout-area'); ta.select();
-      navigator.clipboard?.writeText(ta.value).then(() => toast('已复制'), () => toast('复制失败'));
-    };
-    $('#export-btn').onclick = exportText;
+    $('#textout-copy').onclick = copyExport;
+    $('#textout-download').onclick = downloadExport;
+    $('#export-fmt').querySelectorAll('button').forEach(b => b.onclick = () => {
+      $('#export-fmt').querySelectorAll('button').forEach(x => x.classList.remove('on'));
+      b.classList.add('on');
+      exportFmt = b.dataset.f;
+      renderExport();
+    });
+    $('#export-btn').onclick = openExport;
     $('#daily-btn').onclick = () => toast('日报助手将在 P4 阶段接入');
 
     // 快捷键 N 唤起新增（已解锁时）

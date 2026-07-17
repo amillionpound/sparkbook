@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#1f2937" />
   <title>Sparkbook · 灵感簿</title>
   <link rel="manifest" href="manifest.webmanifest" />
-  <link rel="stylesheet" href="assets/styles.css?v=20260717d" />
+  <link rel="stylesheet" href="assets/styles.css?v=20260717e" />
 </head>
 <body>
   <!-- 解锁页 -->
@@ -96,21 +96,32 @@
     </div>
   </div>
 
-  <!-- 文本导出弹层 -->
+  <!-- 导出弹层 -->
   <div id="textout" class="modal hidden">
     <div class="modal-card">
-      <div class="modal-head"><h3>导出文本</h3><button id="textout-close" class="icon-btn">✕</button></div>
-      <div class="modal-body"><textarea id="textout-area" class="textout-area"></textarea></div>
-      <div class="modal-foot"><span class="spacer"></span><button id="textout-copy" class="btn btn-primary">复制</button></div>
+      <div class="modal-head"><h3>导出</h3><button id="textout-close" class="icon-btn">✕</button></div>
+      <div class="modal-body">
+        <div class="seg" id="export-fmt">
+          <button type="button" data-f="md" class="on">Markdown</button>
+          <button type="button" data-f="json">JSON</button>
+        </div>
+        <textarea id="textout-area" class="textout-area"></textarea>
+      </div>
+      <div class="modal-foot">
+        <span class="muted small" id="export-hint">全库 · 按类型→分类→日期</span>
+        <span class="spacer"></span>
+        <button id="textout-download" class="btn">下载</button>
+        <button id="textout-copy" class="btn btn-primary">复制</button>
+      </div>
     </div>
   </div>
 
   <!-- 轻提示 -->
   <div id="toast" class="toast hidden"></div>
 
-  <script src="assets/crypto.js?v=20260717d"></script>
-  <script src="assets/store.js?v=20260717d"></script>
-  <script src="assets/app.js?v=20260717d"></script>
+  <script src="assets/crypto.js?v=20260717e"></script>
+  <script src="assets/store.js?v=20260717e"></script>
+  <script src="assets/app.js?v=20260717e"></script>
   <script>
     if ('serviceWorker' in navigator) {
       window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
