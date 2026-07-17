@@ -119,29 +119,16 @@ def api_ai():
     return jsonify({'code': 0, 'text': text, 'model': model})
 
 
-# ------------------------- COS 原生签名（预签名 URL，无需 SDK） -------------------------
-def _cos_sign_query(method, uri, expired=3600):
-    now = int(time.time())
-    start = now - 60
-    end = now + expired
-    key_time = '{s}-{e}'.format(s=start, e=end)
-    sign_key = hmac.new(COS_SECRET_KEY.encode('utf-8'), key_time.encode('utf-8'),
-                        hashlib.sha1).hexdigest()
-    http_str = '{method}\n{uri}\n\nhost={host}\n'.format(
-        method=method.lower(), uri=uri, host=COS_HOST)
-    sha1_http = hashlib.sha1(http_str.encode('utf-8')).hexdigest()
-    str_to_sign = 'sha1\n{kt}\n{sh}\n'.format(kt=key_time, sh=sha1_http)
-    sig = hmac.new(sign_key.encode('utf-8'), str_to_sign.encode('utf-8'),
-                   hashlib.sha1).hexdigest()
-    return ('q-sign-algorithm=sha1&q-ak={ak}&q-sign-time={kt}'
-            '&q-key-time={kt}&q-header-list=host&q-url-param-list=&q-signature={sig}'
-            ).format(ak=COS_SECRET_ID, kt=key_time, sig=sig)
+# ------------------------- COS 预签名（官方 SDK，签名最稳妥） -------------------------
+def _cos_client():
+    from qcloud_cos import CosConfig, CosS3Client
+    cfg = CosConfig(Region=COS_REGION, SecretId=COS_SECRET_ID, SecretKey=COS_SECRET_KEY)
+    return CosS3Client(cfg)
 
 
 def cos_presign_url(method, key, expired=3600):
-    uri = '/' + key.lstrip('/')
-    auth = _cos_sign_query(method, uri, expired)
-    return 'https://{host}{uri}?{auth}'.format(host=COS_HOST, uri=uri, auth=auth)
+    client = _cos_client()
+    return client.get_presigned_url(method.upper(), key.lstrip('/'), COS_BUCKET, expired)
 
 
 @app.route('/api/asr/presign', methods=['POST', 'OPTIONS'])
@@ -238,10 +225,11 @@ def asr_transcribe_route():
 
 
 def _cos_delete(key):
-    uri = '/' + key.lstrip('/')
-    auth = _cos_sign_query('delete', uri, expired=60)
-    url = 'https://{host}{uri}?{auth}'.format(host=COS_HOST, uri=uri, auth=auth)
-    requests.request('DELETE', url, timeout=10)
+    try:
+        client = _cos_client()
+        client.delete_object(Bucket=COS_BUCKET, Key=key.lstrip('/'))
+    except Exception:  # noqa: BLE001
+        pass
 
 
 # ------------------------- 健康检查 / 根路由 -------------------------
