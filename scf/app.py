@@ -277,31 +277,39 @@ def vault_load():
 
 # ------------------------- 腾讯云 ASR（录音文件识别） -------------------------
 def asr_transcribe(cos_key, expired=3600):
-    from tencentcloud.common import credential
-    from tencentcloud.asr.v20190614 import asr_client, models
-    cred = credential.Credential(COS_SECRET_ID, COS_SECRET_KEY)
-    client = asr_client.AsrClient(cred, COS_REGION)
-    # 用预签名 GET URL 让 ASR 拉取临时音频（1 小时内有效）
-    url = cos_presign_url('get', cos_key, expired=expired)
-    req = models.CreateTaskRequest()
-    req.EngineModelType = '16k_zh'      # 16k 中文，适配 M4A
-    req.ChannelNum = 1
-    req.ResTextFormat = 0               # 0=原文本（适合做纪要）
-    req.SourceType = 0                  # 0=URL 方式
-    req.Url = url
-    resp = client.CreateTask(req)
-    task_id = resp.Data.TaskId
-    # 轮询任务状态
-    for _ in range(60):
-        time.sleep(5)
-        status_req = models.DescribeTaskStatusRequest()
-        status_req.TaskId = task_id
-        st = client.DescribeTaskStatus(status_req)
-        if st.Data.Status == 2:         # 成功
-            return st.Data.Result, None
-        if st.Data.Status in (3, -1):   # 失败
-            return None, 'ASR 失败 status={0}'.format(st.Data.Status)
-    return None, 'ASR 超时'
+    try:
+        from tencentcloud.common import credential
+        from tencentcloud.asr.v20190614 import asr_client, models
+        from tencentcloud.common.exception.tencent_cloud_sdk_exception import (
+            TencentCloudSDKException,
+        )
+        cred = credential.Credential(COS_SECRET_ID, COS_SECRET_KEY)
+        client = asr_client.AsrClient(cred, COS_REGION)
+        # 用预签名 GET URL 让 ASR 拉取临时音频（1 小时内有效）
+        url = cos_presign_url('get', cos_key, expired=expired)
+        req = models.CreateRecTaskRequest()
+        req.EngineModelType = '16k_zh'   # 16k 中文，适配 M4A/WAV/MP3
+        req.ChannelNum = 1
+        req.ResTextFormat = 0            # 0=原文本（适合做纪要）
+        req.SourceType = 0               # 0=URL 方式
+        req.Url = url
+        resp = client.CreateRecTask(req)
+        task_id = resp.Data.TaskId
+        # 轮询任务状态（最多约 4 分钟，低于 SCF 超时 300s）
+        for _ in range(50):
+            time.sleep(5)
+            status_req = models.DescribeTaskStatusRequest()
+            status_req.TaskId = task_id
+            st = client.DescribeTaskStatus(status_req)
+            if st.Data.Status == 2:      # 成功
+                return st.Data.Result, None
+            if st.Data.Status in (3, -1):  # 失败
+                return None, 'ASR 任务失败 status={0}'.format(st.Data.Status)
+        return None, 'ASR 超时（超过 4 分钟）'
+    except TencentCloudSDKException as e:
+        return None, '腾讯云 ASR 错误: ' + str(e)
+    except Exception as e:  # noqa: BLE001
+        return None, 'ASR 异常: ' + str(e)
 
 
 @app.route('/api/asr/transcribe', methods=['POST', 'OPTIONS'])
@@ -314,7 +322,10 @@ def asr_transcribe_route():
     key = d.get('key', '')
     if not key or not key.startswith(ASR_TEMP_PREFIX):
         return jsonify({'code': 2, 'msg': '无效的 key'}), 400
-    text, err = asr_transcribe(key)
+    try:
+        text, err = asr_transcribe(key)
+    except Exception as e:  # noqa: BLE001
+        return jsonify({'code': 4, 'msg': 'ASR 处理异常: ' + str(e)}), 502
     # 清理临时音频，避免 COS 堆积
     try:
         _cos_delete(key)
@@ -334,7 +345,6 @@ def _cos_delete(key):
 
 
 # ------------------------- 健康检查 / 根路由 -------------------------
-@app.route('/api/health')
 def _cos_probe():
     """真实探测 COS 读写权限（put/get 一个探针对象，再尽力删除）。"""
     try:
@@ -350,6 +360,7 @@ def _cos_probe():
         return False
 
 
+@app.route('/api/health')
 def health():
     return jsonify({
         'code': 0, 'ok': True,
