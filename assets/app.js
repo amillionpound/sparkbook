@@ -447,6 +447,10 @@
   }
 
   // ---------- 录音转写（P5） ----------
+  function openRecorder() {
+    $('#rec-result').value = ''; $('#rec-save').disabled = true; $('#rec-status').textContent = '';
+    $('#recorder').classList.remove('hidden');
+  }
   async function recTranscribe() {
     const file = $('#rec-file').files[0];
     if (!file) { toast('请先选择录音文件'); return; }
@@ -795,7 +799,8 @@
     $('#daily-date').onchange = renderDailyChecklist;
     $('#daily-start').onchange = renderDailyChecklist;
     $('#daily-end').onchange = renderDailyChecklist;
-    $('#rec-btn').onclick = () => { $('#rec-result').value = ''; $('#rec-save').disabled = true; $('#rec-status').textContent = ''; $('#recorder').classList.remove('hidden'); };
+    $('#rec-btn').onclick = openRecorder;
+    $('#rec-open-btn').onclick = openRecorder;
     $('#rec-close').onclick = () => $('#recorder').classList.add('hidden');
     $('#rec-go').onclick = recTranscribe;
     $('#rec-save').onclick = recSave;

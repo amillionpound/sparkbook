@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#1f2937" />
   <title>Sparkbook · 灵感簿</title>
   <link rel="manifest" href="manifest.webmanifest" />
-  <link rel="stylesheet" href="assets/styles.css?v=20260717h" />
+  <link rel="stylesheet" href="assets/styles.css?v=20260717i" />
 </head>
 <body>
   <!-- 解锁页 -->
@@ -50,6 +50,7 @@
           <button id="export-btn" class="link-btn">导出</button>
           <button id="daily-btn" class="link-btn">日报</button>
           <button id="summary-btn" class="link-btn">汇总</button>
+          <button id="rec-open-btn" class="link-btn">🎙 录音转写</button>
         </div>
       </aside>
 
@@ -136,7 +137,7 @@
               <button type="button" data-mode="day" class="on">日报</button>
               <button type="button" data-mode="week">周报</button>
             </div>
-            <button id="rec-btn" class="mini-btn" title="录音转写">🎙</button>
+            <button id="rec-btn" class="btn btn-ghost" title="录音转写">🎙 录音转写</button>
           </div>
           <div class="daily-row" id="daily-dayrow">
             <label>日期</label>
@@ -227,9 +228,9 @@
   <!-- 轻提示 -->
   <div id="toast" class="toast hidden"></div>
 
-  <script src="assets/crypto.js?v=20260717h"></script>
-  <script src="assets/store.js?v=20260717h"></script>
-  <script src="assets/app.js?v=20260717h"></script>
+  <script src="assets/crypto.js?v=20260717i"></script>
+  <script src="assets/store.js?v=20260717i"></script>
+  <script src="assets/app.js?v=20260717i"></script>
   <script>
     if ('serviceWorker' in navigator) {
       window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
