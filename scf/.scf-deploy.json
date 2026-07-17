@@ -12,7 +12,8 @@
     "Werkzeug>=3.0",
     "Jinja2>=3.1",
     "requests>=2.31",
-    "tencentcloud-sdk-python-asr"
+    "tencentcloud-sdk-python-asr",
+    "cos-python-sdk-v5"
   ],
   "runtime": "Python3.10",
   "access_url": "https://1256784020-0i70k3at89.ap-guangzhou.tencentscf.com"
