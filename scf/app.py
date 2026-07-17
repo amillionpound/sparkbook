@@ -295,8 +295,8 @@ def asr_transcribe(cos_key, expired=3600):
         req.Url = url
         resp = client.CreateRecTask(req)
         task_id = resp.Data.TaskId
-        # 轮询任务状态（最多约 4 分钟，低于 SCF 超时 300s）
-        for _ in range(50):
+        # 轮询任务状态（最多约 3 分钟，留余量给 LLM 纪要提炼）
+        for _ in range(40):
             time.sleep(5)
             status_req = models.DescribeTaskStatusRequest()
             status_req.TaskId = task_id
@@ -310,6 +310,50 @@ def asr_transcribe(cos_key, expired=3600):
         return None, '腾讯云 ASR 错误: ' + str(e)
     except Exception as e:  # noqa: BLE001
         return None, 'ASR 异常: ' + str(e)
+
+
+# ------------------------- 会议纪要提炼（LLM） -------------------------
+MEETING_SYSTEM = (
+    '你是专业的会议纪要整理助手。下面是一段会议录音的逐字转写稿，'
+    '请整理为可直接用于工作日志的结构化会议纪要。\n'
+    '输出严格遵循以下 Markdown 格式：\n'
+    '## 会议概况\n'
+    '- 主题/议题：\n'
+    '- 参会方/人员：\n'
+    '- 时间：\n\n'
+    '## 核心结论\n'
+    '- （每条结论一行，保留决策、数字、负责人）\n\n'
+    '## 行动项（待办）\n'
+    '- （格式：负责人 — 事项 — 时限；未提及标注「待确认」）\n\n'
+    '## 备忘\n'
+    '- （关键风险、未决事项、需跟进点）\n\n'
+    '要求：剔除口语冗余、重复、停顿词（如「那个」「呃」）；不要编造未提及的信息；'
+    '使用中文书面语，精简凝练；若某小节无内容则写「未提及」。'
+)
+
+
+def summarize_meeting(raw_text, terms=None):
+    """把逐字稿提炼为结构化会议纪要；失败返回 ('', 错误原因)。"""
+    if not raw_text or not raw_text.strip():
+        return '', None
+    if not DEEPSEEK_API_KEY:
+        return '', '未配置 DEEPSEEK_API_KEY，已保留原始转写'
+    user = raw_text.strip()
+    if terms:
+        try:
+            term_list = [t for t in terms if t and str(t).strip()]
+        except Exception:  # noqa: BLE001
+            term_list = []
+        if term_list:
+            user += '\n\n【业务术语提示】整理时请准确保留以下术语：' + '、'.join(term_list)
+    messages = [
+        {'role': 'system', 'content': MEETING_SYSTEM},
+        {'role': 'user', 'content': user},
+    ]
+    text, err = call_deepseek(messages, model='deepseek-chat', max_tokens=2000, temperature=0.3)
+    if err:
+        return '', err
+    return (text or '').strip(), None
 
 
 @app.route('/api/asr/transcribe', methods=['POST', 'OPTIONS'])
@@ -333,7 +377,17 @@ def asr_transcribe_route():
         pass
     if err:
         return jsonify({'code': 3, 'msg': err}), 502
-    return jsonify({'code': 0, 'text': text})
+    # 纪要提炼（LLM 失败不阻断，降级为原始转写）
+    terms = d.get('terms') or None
+    summary, llm_err = summarize_meeting(text, terms)
+    resp = {'code': 0, 'text': text}
+    if summary:
+        resp['summary'] = summary
+    else:
+        resp['summary'] = ''
+        if llm_err:
+            resp['llm_warn'] = llm_err
+    return jsonify(resp)
 
 
 def _cos_delete(key):

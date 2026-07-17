@@ -297,11 +297,15 @@
         try {
           const key = await uploadAudio(file);
           $('#f-rec-status').textContent = '云端转写中（可能需1-2分钟）…';
-          const text = await transcribeAudio(key);
+          const sp = store.styleProfile();
+          const terms = (sp && sp.terms) ? sp.terms : [];
+          const res = await transcribeAudio(key, terms);
+          const fill = res.summary || res.text;
           const ta = $('#f-body');
-          ta.value = (ta.value ? ta.value + '\n\n' : '') + text;
-          $('#f-rec-status').textContent = '已填入纪要';
-          toast('录音已转写并填入纪要');
+          ta.value = (ta.value ? ta.value + '\n\n' : '') + fill;
+          $('#f-rec-status').textContent = res.summary ? '已填入提炼纪要' : '已填入原稿（纪要提炼未成功）';
+          if (res.llmWarn) toast(res.llmWarn);
+          else toast('录音已转写为工作纪要');
         } catch (e) { $('#f-rec-status').textContent = ''; toast('转写失败：' + (e.message || e)); }
       };
     }
@@ -489,14 +493,14 @@
     if (d.code !== 0) throw new Error(d.msg || ('code ' + d.code));
     return d.key;
   }
-  async function transcribeAudio(key) {
+  async function transcribeAudio(key, terms) {
     const r = await fetch(API_BASE + '/api/asr/transcribe', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ key }),
+      body: JSON.stringify({ key, terms: terms || [] }),
     });
     const d = await r.json().catch(() => ({}));
     if (d.code !== 0) throw new Error(d.msg || ('code ' + d.code));
-    return d.text || '';
+    return { text: d.text || '', summary: d.summary || '', llmWarn: d.llm_warn || '' };
   }
   async function recTranscribe() {
     const file = $('#rec-file').files[0];
@@ -506,10 +510,14 @@
     try {
       const key = await uploadAudio(file);
       $('#rec-status').textContent = '云端转写中（可能需1-2分钟）…';
-      const text = await transcribeAudio(key);
-      $('#rec-result').value = text;
-      $('#rec-save').disabled = !(text && text.trim());
-      $('#rec-status').textContent = '完成';
+      const sp = store.styleProfile();
+      const terms = (sp && sp.terms) ? sp.terms : [];
+      const res = await transcribeAudio(key, terms);
+      const fill = res.summary || res.text;
+      $('#rec-result').value = fill;
+      $('#rec-save').disabled = !(fill && fill.trim());
+      $('#rec-status').textContent = res.summary ? '完成（已提炼为纪要）' : '完成（已保留原稿）';
+      if (res.llmWarn) toast(res.llmWarn);
     } catch (e) { $('#rec-status').textContent = ''; toast('转写失败：' + (e.message || e)); }
   }
   async function recSave() {
