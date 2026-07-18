@@ -254,6 +254,7 @@ def _asr_finalize(sid):
     except Exception as e:  # noqa: BLE001
         return jsonify({'code': 3, 'msg': '合并分片失败: ' + str(e),
                         'debug_parts': list(meta.get('parts', {}).keys()),
+                        'debug_parts_full': meta.get('parts', {}),
                         'debug_uploadId': meta.get('uploadId')}), 502
     try:
         client.delete_object(Bucket=COS_BUCKET, Key=meta_key)
