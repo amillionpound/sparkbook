@@ -234,7 +234,12 @@ def _asr_upload_part(sid, ext, part_idx, data):
     resp = client.upload_part(
         Bucket=COS_BUCKET, Key=meta['key'], PartNumber=part_no,
         UploadId=meta['uploadId'], Body=data)
-    meta['parts'][str(part_no)] = resp['ETag']
+    # qcloud_cos 的 complete_multipart_upload 在 ETag 带双引号时生成的 XML 会丢 Part；
+    # 这里去掉首尾引号，complete 时再由 SDK 自行加回。
+    etag = resp.get('ETag') or ''
+    if etag.startswith('"') and etag.endswith('"'):
+        etag = etag[1:-1]
+    meta['parts'][str(part_no)] = etag
     _cos_put_json(meta_key, meta)
     return meta['key'], part_no
 
