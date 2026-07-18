@@ -182,9 +182,6 @@ def asr_upload():
         return _asr_abort(sid)
     if is_final:
         return _asr_finalize(sid)
-    if request.args.get('meta') == '1':
-        m = _cos_get_json(_asr_meta_key(sid)) if sid else None
-        return jsonify({'code': 0, 'sid': sid, 'meta': m})
 
     # 读取请求体（原始字节；fetch body 为 Blob/File 时）
     data = request.get_data()
@@ -253,14 +250,12 @@ def _asr_finalize(sid):
     try:
         parts = [{'PartNumber': int(p), 'ETag': meta['parts'][str(p)]}
                  for p in sorted(meta['parts'].keys(), key=lambda x: int(x))]
+        # qcloud_cos 的 complete_multipart_upload 要求 MultipartUpload={'Part': [...]}（单数 Part）
         client.complete_multipart_upload(
             Bucket=COS_BUCKET, Key=meta['key'], UploadId=meta['uploadId'],
-            MultipartUpload={'Parts': parts})
+            MultipartUpload={'Part': parts})
     except Exception as e:  # noqa: BLE001
-        return jsonify({'code': 3, 'msg': '合并分片失败: ' + str(e),
-                        'debug_parts': list(meta.get('parts', {}).keys()),
-                        'debug_parts_full': meta.get('parts', {}),
-                        'debug_uploadId': meta.get('uploadId')}), 502
+        return jsonify({'code': 3, 'msg': '合并分片失败: ' + str(e)}), 502
     try:
         client.delete_object(Bucket=COS_BUCKET, Key=meta_key)
     except Exception:  # noqa: BLE001
