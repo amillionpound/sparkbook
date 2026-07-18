@@ -105,27 +105,59 @@
     const cats = store.categories();
     let html = `<span class="cat-pill ${cur.cat === '' ? 'active' : ''}" data-cat="">全部</span>`;
     html += cats.map(c =>
-      `<span class="cat-pill ${cur.cat === c ? 'active' : ''}" data-cat="${esc(c)}">${esc(c)}<span class="x" data-x="${esc(c)}">✕</span></span>`
+      `<span class="cat-pill ${cur.cat === c ? 'active' : ''}" data-cat="${esc(c)}">${esc(c)}</span>`
     ).join('');
     box.innerHTML = html;
     box.querySelectorAll('.cat-pill').forEach(p => {
-      p.onclick = (e) => {
-        if (e.target.dataset.x) return;
-        cur.cat = p.dataset.cat; renderCats(); renderList();
-      };
+      p.onclick = () => { cur.cat = p.dataset.cat; renderCats(); renderList(); };
     });
-    box.querySelectorAll('.x').forEach(x => {
-      x.onclick = (e) => {
-        e.stopPropagation();
-        const name = x.dataset.x;
-        if (name === '工作') { toast('「工作」是日报核心分类，不可删除'); return; }
-        if (confirm(`删除分类「${name}」？该分类下的条目将变为未分类。`)) {
-          store.removeCategory(name);
-          if (cur.cat === name) cur.cat = '';
-          renderCats(); renderList(); sync();
-        }
-      };
+  }
+
+  // ---------- 设置（随库加密同步） ----------
+  function openSettings() {
+    const s = store.settings();
+    document.querySelectorAll('#set-model input').forEach(r => { r.checked = (r.value === s.summaryModel); });
+    document.querySelectorAll('#set-engine input').forEach(r => { r.checked = (r.value === s.asrEngine); });
+    renderSettingsCats();
+    $('#settings').classList.remove('hidden');
+  }
+  function renderSettingsCats() {
+    const box = $('#set-cats');
+    const cats = store.categories();
+    if (!cats.length) { box.innerHTML = '<div class="muted small">还没有分类</div>'; return; }
+    box.innerHTML = cats.map(c =>
+      `<div class="set-cat-row">
+        <span class="set-cat-name">${esc(c)}</span>
+        ${c === '工作' ? '<span class="muted small">日报核心分类 · 不可删</span>'
+          : `<button class="mini-btn danger" data-delcat="${esc(c)}">删除</button>`}
+      </div>`
+    ).join('');
+    box.querySelectorAll('[data-delcat]').forEach(b => b.onclick = () => {
+      const name = b.dataset.delcat;
+      if (confirm(`删除分类「${name}」？该分类下的条目将变为未分类。`)) {
+        store.removeCategory(name);
+        if (cur.cat === name) cur.cat = '';
+        renderCats(); renderList(); renderSettingsCats(); sync();
+      }
     });
+  }
+  function initSettings() {
+    document.querySelectorAll('#set-model input').forEach(r => r.onchange = () => {
+      store.saveSettings({ summaryModel: r.value }); sync();
+      toast('会议总结模型：' + (r.value === 'reasoner' ? 'deepseek-reasoner（更准·更慢·约3-4倍成本）' : 'deepseek-chat（快·省）'));
+    });
+    document.querySelectorAll('#set-engine input').forEach(r => r.onchange = () => {
+      store.saveSettings({ asrEngine: r.value }); sync();
+      toast('语音引擎优先：' + (r.value === 'flash' ? '极速版（精度略降·≤2h/100MB）' : '标准版（精度最高）'));
+    });
+    $('#set-add-cat').onclick = () => {
+      const v = ($('#set-new-cat').value || '').trim();
+      if (!v) return;
+      if (store.addCategory(v)) { $('#set-new-cat').value = ''; renderSettingsCats(); renderCats(); sync(); }
+      else toast('分类已存在或无效');
+    };
+    $('#settings-close').onclick = () => $('#settings').classList.add('hidden');
+    $('#settings-btn').onclick = openSettings;
   }
 
   // ---------- 列表 ----------
@@ -605,7 +637,7 @@
     return { transcript: trans.join('\n').trim(), context: ctx.filter(Boolean).join('\n').trim() };
   }
   async function transcribeAudio(key) {
-    const body = { key };
+    const body = { key, engine: store.settings().asrEngine };
     const r = await fetch(API_BASE + '/api/asr/transcribe', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -623,6 +655,7 @@
     const body = {
       text: transcript || '', context: context || '',
       terms: terms || [], rules: rules || [], samples: samples || [],
+      model: store.settings().summaryModel,
     };
     const r = await fetch(API_BASE + '/api/asr/summarize', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -962,10 +995,6 @@
     $('#reader-edit').onclick = () => {
       if (readingId) { openEditor(readingId); $('#reader').classList.add('hidden'); }
     };
-    $('#add-cat-btn').onclick = () => {
-      const name = prompt('新分类名称：');
-      if (name && store.addCategory(name)) { renderCats(); sync(); }
-    };
     $('#search').addEventListener('input', e => { cur.q = e.target.value.trim(); renderList(); });
 
     $('#textout-close').onclick = () => $('#textout').classList.add('hidden');
@@ -999,6 +1028,7 @@
     $('#daily-copy').onclick = dailyCopy;
     $('#daily-revise').onclick = dailyRevise;
     $('#sp-save').onclick = saveStyleUI;
+    initSettings();
 
     // 快捷键 N 唤起新增（已解锁时）
     document.addEventListener('keydown', e => {

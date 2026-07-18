@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#1f2937" />
   <title>Sparkbook · 灵感簿</title>
   <link rel="manifest" href="manifest.webmanifest" />
-  <link rel="stylesheet" href="assets/styles.css?v=20260718d" />
+  <link rel="stylesheet" href="assets/styles.css?v=20260718e" />
 </head>
 <body>
   <!-- 解锁页 -->
@@ -37,16 +37,16 @@
       <aside id="sidebar" class="sidebar">
         <nav class="type-nav" id="type-nav"></nav>
         <div class="cat-block">
-          <div class="cat-head">
-            <span>分类</span>
-            <button id="add-cat-btn" class="mini-btn" title="新增分类">＋</button>
-          </div>
+        <div class="cat-head">
+          <span>分类</span>
+        </div>
           <div id="cat-list" class="cat-list"></div>
         </div>
         <div class="search-block">
           <input id="search" class="search-input" placeholder="搜索标题/正文/分类…" />
         </div>
         <div class="side-foot">
+          <button id="settings-btn" class="link-btn">⚙ 设置</button>
           <button id="export-btn" class="link-btn">导出</button>
           <button id="daily-btn" class="link-btn">日报</button>
           <button id="summary-btn" class="link-btn">汇总</button>
@@ -237,12 +237,45 @@
     </div>
   </div>
 
+  <!-- 设置 弹层 -->
+  <div id="settings" class="modal hidden">
+    <div class="modal-card wide">
+      <div class="modal-head"><h3>⚙ 设置</h3><button id="settings-close" class="icon-btn">✕</button></div>
+      <div class="modal-body">
+        <div class="field">
+          <label>会议总结模型</label>
+          <div id="set-model" class="set-opts">
+            <label class="set-opt"><input type="radio" name="sm" value="chat" /> deepseek-chat（快 · 省）</label>
+            <label class="set-opt"><input type="radio" name="sm" value="reasoner" /> deepseek-reasoner（更准 · 更慢 · 约 3-4 倍成本）</label>
+          </div>
+          <p class="muted small">reasoner 为推理模型，纪要更准更细，但更慢且更贵。可按会议重要程度随时切换。</p>
+        </div>
+        <div class="field">
+          <label>语音转写引擎（优先）</label>
+          <div id="set-engine" class="set-opts">
+            <label class="set-opt"><input type="radio" name="se" value="standard" /> 标准版（精度最高）</label>
+            <label class="set-opt"><input type="radio" name="se" value="flash" /> 极速版（精度略降 · ≤2h/100MB）</label>
+          </div>
+          <p class="muted small">主引擎免费额度耗尽或超限时，会自动回退到另一引擎（极速版仅兜 ≤2h 录音）。此设置只决定"优先用哪个"。</p>
+        </div>
+        <div class="field">
+          <label>分类管理</label>
+          <div class="daily-row">
+            <input id="set-new-cat" class="search-input" placeholder="新分类名称" />
+            <button id="set-add-cat" class="btn btn-ghost">添加</button>
+          </div>
+          <div id="set-cats" class="set-cats"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- 轻提示 -->
   <div id="toast" class="toast hidden"></div>
 
   <script src="assets/crypto.js?v=20260717m"></script>
   <script src="assets/store.js?v=20260717m"></script>
-  <script src="assets/app.js?v=20260718f"></script>
+  <script src="assets/app.js?v=20260718g"></script>
   <script>
     if ('serviceWorker' in navigator) {
       window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));

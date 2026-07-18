@@ -168,3 +168,14 @@ body {
 .ls-row { display: grid; grid-template-columns: 1.4fr 1fr 1fr 0.8fr; gap: 8px; padding: 8px 10px;
   border: 1px solid var(--line); border-radius: 9px; font-size: 13px; align-items: center; }
 .ls-row > span:last-child { text-align: right; }
+
+/* 设置 */
+.set-opts { display: flex; flex-direction: column; gap: 8px; }
+.set-opt { display: flex; align-items: center; gap: 8px; font-size: 14px; color: var(--ink); cursor: pointer; padding: 8px 10px; border: 1px solid var(--line); border-radius: 9px; }
+.set-opt input { width: 16px; height: 16px; }
+.set-cats { margin-top: 8px; border: 1px solid var(--line); border-radius: 10px; padding: 4px 10px; }
+.set-cat-row { display: flex; align-items: center; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid var(--line); }
+.set-cat-row:last-child { border-bottom: none; }
+.set-cat-name { font-size: 14px; }
+.mini-btn.danger { color: #e5484d; border-color: #f3c2c4; background: #fff5f5; }
+.mini-btn.danger:hover { background: #ffe9e9; }

@@ -397,7 +397,8 @@ def vault_load():
 
 
 # ------------------------- 腾讯云 ASR（录音文件识别） -------------------------
-def asr_transcribe(cos_key, expired=3600):
+def _asr_standard_try(cos_key, expired, flash_fallback):
+    """标准版（CreateRecTask），精度最高；flash_fallback=True 时免费额度耗尽自动回退极速版。"""
     try:
         from tencentcloud.common import credential
         from tencentcloud.asr.v20190614 import asr_client, models
@@ -431,7 +432,7 @@ def asr_transcribe(cos_key, expired=3600):
         code = getattr(e, 'code', '') or ''
         emsg = str(e)
         # 标准版免费额度耗尽 → 自动回退极速版（独立免费包，精度略降，单文件≤2h/100MB）
-        if 'NoFreeAmount' in code or 'NoFreeAmount' in emsg:
+        if flash_fallback and ('NoFreeAmount' in code or 'NoFreeAmount' in emsg):
             try:
                 return asr_transcribe_flash(cos_key)
             except Exception as fe:  # noqa: BLE001
@@ -439,6 +440,21 @@ def asr_transcribe(cos_key, expired=3600):
         return None, '腾讯云 ASR 错误: ' + emsg
     except Exception as e:  # noqa: BLE001
         return None, 'ASR 异常: ' + str(e)
+
+
+def asr_transcribe(cos_key, engine_pref='standard', expired=3600):
+    """按偏好选择转写引擎，主引擎失败时自动回退次选，尽量出结果。
+    engine_pref: 'standard'（默认，精度最高）或 'flash'（极速版，精度略降，单文件≤2h/100MB）。
+    - standard 优先：免费额度耗尽 → 回退 flash（仅当文件≤2h/100MB）。
+    - flash 优先：额度/时长/大小超限 → 回退 standard（不再回退 flash，避免循环）。
+    """
+    if engine_pref == 'flash':
+        text, err = asr_transcribe_flash(cos_key)
+        if text is not None:
+            return text, None
+        # 极速版不可用（额度/时长/大小限制）→ 回退标准版（不再回退 flash，避免循环）
+        return _asr_standard_try(cos_key, expired, flash_fallback=False)
+    return _asr_standard_try(cos_key, expired, flash_fallback=True)
 
 
 # ------------------------- 腾讯云 ASR 极速版（flash）回退 -------------------------
@@ -594,7 +610,7 @@ def _split_chunks(text, max_chars=4000):
     return chunks or [text]
 
 
-def summarize_meeting(raw_text, terms=None, context=None, profile=None):
+def summarize_meeting(raw_text, terms=None, context=None, profile=None, model='deepseek-chat'):
     """把逐字稿提炼为结构化会议纪要；长文本分块摘要再汇总(map-reduce)。失败返回 ('', 错误原因)。"""
     if not raw_text or not raw_text.strip():
         return '', None
@@ -634,7 +650,7 @@ def summarize_meeting(raw_text, terms=None, context=None, profile=None):
             {'role': 'system', 'content': MEETING_SYSTEM + style_block},
             {'role': 'user', 'content': user},
         ]
-        text, err = call_deepseek(messages, model='deepseek-chat', max_tokens=3500, temperature=0.3)
+        text, err = call_deepseek(messages, model=model, max_tokens=3500, temperature=0.3)
         if err:
             return '', err
         return (text or '').strip(), None
@@ -646,7 +662,7 @@ def summarize_meeting(raw_text, terms=None, context=None, profile=None):
             {'role': 'system', 'content': BLOCK_SYSTEM},
             {'role': 'user', 'content': ch},
         ]
-        bt, berr = call_deepseek(bm, model='deepseek-chat', max_tokens=900, temperature=0.3)
+        bt, berr = call_deepseek(bm, model=model, max_tokens=900, temperature=0.3)
         if berr:
             block_points.append('（该段处理异常，保留原始片段）\n' + ch[:600])
         else:
@@ -670,8 +686,11 @@ def asr_transcribe_route():
     key = d.get('key', '')
     if not key or not key.startswith(ASR_TEMP_PREFIX):
         return jsonify({'code': 2, 'msg': '无效的 key'}), 400
+    engine = d.get('engine') or 'standard'
+    if engine not in ('standard', 'flash'):
+        engine = 'standard'
     try:
-        text, err = asr_transcribe(key)
+        text, err = asr_transcribe(key, engine_pref=engine)
     except Exception as e:  # noqa: BLE001
         return jsonify({'code': 4, 'msg': 'ASR 处理异常: ' + str(e)}), 502
     # 清理临时音频，避免 COS 堆积
@@ -701,7 +720,10 @@ def asr_summarize_route():
     rules = d.get('rules') or None
     samples = d.get('samples') or None
     profile = {'rules': rules or [], 'samples': samples or []} if (rules or samples) else None
-    summary, llm_err = summarize_meeting(text, terms, context, profile)
+    model = d.get('model') or 'chat'
+    if model not in ('chat', 'reasoner'):
+        model = 'chat'
+    summary, llm_err = summarize_meeting(text, terms, context, profile, model=model)
     resp = {'code': 0}
     if summary:
         resp['summary'] = summary

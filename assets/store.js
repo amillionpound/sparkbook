@@ -116,6 +116,7 @@
         entries: [],
         categories: ['生活', '工作', '项目', '随手'],
         styleProfile: { terms: [], rules: [], samples: [] },
+        settings: { summaryModel: 'chat', asrEngine: 'standard' },
       };
     }
 
@@ -217,6 +218,19 @@
     // ---- 风格档案 ----
     styleProfile() { return this.state.styleProfile; }
     saveStyleProfile(sp) { this.state.styleProfile = sp; }
+
+    // ---- 设置项（随库加密同步，跨端一致） ----
+    settings() {
+      const s = this.state.settings || {};
+      return {
+        summaryModel: s.summaryModel === 'reasoner' ? 'reasoner' : 'chat',
+        asrEngine: s.asrEngine === 'flash' ? 'flash' : 'standard',
+      };
+    }
+    saveSettings(patch) {
+      const cur = this.settings();
+      this.state.settings = Object.assign(cur, patch || {});
+    }
 
     // ---- 查询 ----
     filter({ type, category, q }) {
