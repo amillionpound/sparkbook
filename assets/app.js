@@ -33,6 +33,22 @@
   function esc(s) {
     return (s || '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
   }
+  // 轻量 Markdown→HTML（输入已 esc 过），用于阅读视图渲染 AI 纪要
+  function formatMarkdown(text) {
+    let html = text || '';
+    html = html.replace(/^### (.+)$/gm, '<h4>$1</h4>');
+    html = html.replace(/^## (.+)$/gm, '<h3>$1</h3>');
+    html = html.replace(/^# (.+)$/gm, '<h2>$1</h2>');
+    html = html.replace(/^[-*] (.+)$/gm, '<li>$1</li>');
+    // 把连续的 <li> 包裹进 <ul>
+    html = html.replace(/((?:<li>.*<\/li>\n?)+)/g, '<ul>$1</ul>');
+    html = html.replace(/\n{2,}/g, '</p><p>');
+    html = '<p>' + html + '</p>';
+    // 清理空标签
+    html = html.replace(/<p><\/p>/g, '');
+    html = html.replace(/<ul><\/ul>/g, '');
+    return html;
+  }
   function defaultDateTime() {
     const d = new Date();
     const p = n => String(n).padStart(2, '0');
@@ -192,7 +208,14 @@
     } else if (e.type === 'meeting') {
       html += `<div class="field"><label>标题</label><p>${esc(e.title)}</p></div>`;
       if (e.meetingDate) html += `<div class="field"><label>会议日期</label><p>${esc(e.meetingDate)}</p></div>`;
-      if (e.body) html += `<div class="field"><label>纪要 / 正文</label><pre class="reader-text">${esc(e.body)}</pre></div>`;
+      // AI 纪要（独立显示，优先展示）
+      if (e.summary) {
+        html += `<div class="field"><label>AI 纪要</label><div class="reader-text reader-summary">${formatMarkdown(esc(e.summary))}</div></div>`;
+      }
+      // 转写原文（可能很长，可滚动）
+      if (e.body) {
+        html += `<div class="field"><label>转写原文 / 正文</label><pre class="reader-text reader-transcript">${esc(e.body)}</pre></div>`;
+      }
     } else if (e.type === 'ledger') {
       const a = (Number(e.amount) || 0).toFixed(2);
       const sign = e.direction === 'in' ? '+' : '-';
@@ -323,6 +346,12 @@
           const terms = (sp && sp.terms) ? sp.terms : [];
           const res = await summarizeMeeting(transcript, context, terms);
           $('#f-summary').value = res.summary || '';
+          // AI 纪要通常包含「- 主题/议题：xxx」，自动填入标题（仅当标题为空或默认值时）
+          const topic = extractTopic(res.summary);
+          if (topic) {
+            const curTitle = ($('#f-title') ? $('#f-title').value : '').trim();
+            if (!curTitle || curTitle.startsWith('会议录音 ')) $('#f-title').value = topic;
+          }
           $('#f-sum-status').textContent = res.summary ? '已生成（可编辑）' : '生成失败，已保留原文';
           if (res.llmWarn) toast(res.llmWarn);
         } catch (e) { $('#f-sum-status').textContent = ''; toast('总结失败：' + (e.message || e)); }
@@ -498,7 +527,8 @@
 
   // ---------- 录音转写（P5） ----------
   function openRecorder() {
-    $('#rec-result').value = ''; $('#rec-summary').value = ''; $('#rec-save').disabled = true; $('#rec-status').textContent = '';
+    $('#rec-result').value = ''; $('#rec-summary').value = ''; $('#rec-title').value = '';
+    $('#rec-save').disabled = true; $('#rec-status').textContent = '';
     $('#recorder').classList.remove('hidden');
   }
   // 分片上传：把文件切成 ≤4MB 的片，逐片 POST 给 SCF（SCF 用 COS 分块上传合并）。
@@ -569,6 +599,11 @@
     if (d.code !== 0) throw new Error(d.msg || ('code ' + d.code));
     return { text: d.text || '' };
   }
+  // 从 AI 纪要中提取「主题/议题」行，用于自动填充会议标题
+  function extractTopic(summary) {
+    const m = (summary || '').match(/主题[\/\s]*(?:议题)?[：:]\s*(.+)/);
+    return m ? m[1].trim() : '';
+  }
   async function summarizeMeeting(transcript, context, terms) {
     const body = { text: transcript || '', context: context || '', terms: terms || [] };
     const r = await fetch(API_BASE + '/api/asr/summarize', {
@@ -605,6 +640,12 @@
       const terms = (sp && sp.terms) ? sp.terms : [];
       const res = await summarizeMeeting(transcript, context, terms);
       $('#rec-summary').value = res.summary || '';
+      // 自动提取主题填入标题
+      const topic = extractTopic(res.summary);
+      if (topic) {
+        const curTitle = ($('#rec-title') ? $('#rec-title').value : '').trim();
+        if (!curTitle || curTitle.startsWith('会议录音 ')) $('#rec-title').value = topic;
+      }
       $('#rec-status').textContent = res.summary ? '已生成纪要（可再编辑）' : '纪要生成失败，已保留原文';
       if (res.llmWarn) toast(res.llmWarn);
     } catch (e) { $('#rec-status').textContent = ''; toast('总结失败：' + (e.message || e)); }
@@ -613,8 +654,8 @@
     const text = $('#rec-result').value.trim();
     if (!text) { toast('没有可保存的内容'); return; }
     const summary = ($('#rec-summary').value || '').trim();
-    const now = defaultDateTime();
-    store.addEntry({ type: 'meeting', title: '会议录音 ' + now.slice(0, 10), meetingDate: now, body: text, summary: summary });
+    const recTitle = ($('#rec-title') ? $('#rec-title').value : '').trim() || ('会议录音 ' + new Date().toISOString().slice(0, 10));
+    store.addEntry({ type: 'meeting', title: recTitle, meetingDate: new Date().toISOString().slice(0, 16).replace('T', ' '), body: text, summary: summary });
     await sync();
     toast('已保存为会议记录（原文+纪要）');
     $('#recorder').classList.add('hidden');

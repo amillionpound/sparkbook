@@ -125,6 +125,13 @@ body {
 .textout-area { width: 100%; min-height: 260px; border: 1px solid var(--line); border-radius: 9px; padding: 10px;
   font-family: inherit; font-size: 14px; outline: none; resize: vertical; }
 .reader-text { margin: 0; white-space: pre-wrap; word-break: break-word; line-height: 1.6; color: var(--ink); }
+.reader-summary { white-space: normal; line-height: 1.75; }
+.reader-summary h2, .reader-summary h3, .reader-summary h4 { margin: 8px 0 4px; color: var(--ink); font-weight: 600; }
+.reader-summary ul { padding-left: 18px; margin: 4px 0; }
+.reader-summary li { margin: 2px 0; }
+.reader-summary p { margin: 4px 0; }
+/* 转写原文可能很长（4h录音），限制高度可滚动 */
+.reader-transcript { max-height: 50vh; overflow-y: auto; border: 1px solid var(--line); border-radius: 9px; padding: 10px; background: #f8f9fa; }
 
 /* 轻提示 */
 .toast { position: fixed; left: 50%; bottom: 90px; transform: translateX(-50%); background: #1f2937; color: #fff;

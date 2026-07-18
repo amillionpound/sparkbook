@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#1f2937" />
   <title>Sparkbook · 灵感簿</title>
   <link rel="manifest" href="manifest.webmanifest" />
-  <link rel="stylesheet" href="assets/styles.css?v=20260717m" />
+  <link rel="stylesheet" href="assets/styles.css?v=20260718d" />
 </head>
 <body>
   <!-- 解锁页 -->
@@ -214,6 +214,10 @@
           <span id="rec-status" class="muted small"></span>
         </div>
         <div class="field">
+          <label>标题（汇总总结后自动从纪要提取，可手动改）</label>
+          <input id="rec-title" placeholder="留空则用「会议录音 YYYY-MM-DD」" />
+        </div>
+        <div class="field">
           <label>转写原文（可编辑；用 # 行写你的补充/修正，第一个 # 已预填）</label>
           <textarea id="rec-result" class="textout-area"></textarea>
         </div>
@@ -238,7 +242,7 @@
 
   <script src="assets/crypto.js?v=20260717m"></script>
   <script src="assets/store.js?v=20260717m"></script>
-  <script src="assets/app.js?v=20260718c"></script>
+  <script src="assets/app.js?v=20260718d"></script>
   <script>
     if ('serviceWorker' in navigator) {
       window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
