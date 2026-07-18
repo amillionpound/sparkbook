@@ -355,7 +355,9 @@
         try {
           const sp = store.styleProfile();
           const terms = (sp && sp.terms) ? sp.terms : [];
-          const res = await summarizeMeeting(transcript, context, terms);
+          const rules = (sp && sp.rules) ? sp.rules : [];
+          const samples = (sp && sp.samples) ? sp.samples : [];
+          const res = await summarizeMeeting(transcript, context, terms, rules, samples);
           $('#f-summary').value = res.summary || '';
           // AI 纪要通常包含「- 主题/议题：xxx」，自动填入标题（仅当标题为空或默认值时）
           const topic = extractTopic(res.summary);
@@ -617,8 +619,11 @@
     const m = (summary || '').match(/主题[\/\s]*(?:议题)?[：:]\s*(.+)/);
     return m ? m[1].trim() : '';
   }
-  async function summarizeMeeting(transcript, context, terms) {
-    const body = { text: transcript || '', context: context || '', terms: terms || [] };
+  async function summarizeMeeting(transcript, context, terms, rules, samples) {
+    const body = {
+      text: transcript || '', context: context || '',
+      terms: terms || [], rules: rules || [], samples: samples || [],
+    };
     const r = await fetch(API_BASE + '/api/asr/summarize', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -651,7 +656,9 @@
     try {
       const sp = store.styleProfile();
       const terms = (sp && sp.terms) ? sp.terms : [];
-      const res = await summarizeMeeting(transcript, context, terms);
+      const rules = (sp && sp.rules) ? sp.rules : [];
+      const samples = (sp && sp.samples) ? sp.samples : [];
+      const res = await summarizeMeeting(transcript, context, terms, rules, samples);
       $('#rec-summary').value = res.summary || '';
       // 自动提取主题填入标题
       const topic = extractTopic(res.summary);

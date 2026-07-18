@@ -441,12 +441,14 @@ MEETING_SYSTEM = (
     '- 参会方/人员：\n'
     '- 时间：\n\n'
     '## 核心结论\n'
-    '- （每条结论一行，保留决策、数字、负责人）\n\n'
+    '1. （每条结论一行，保留决策、数字、负责人，使用编号列表）\n\n'
     '## 行动项（待办）\n'
-    '- （格式：负责人 — 事项 — 时限；未提及标注「待确认」）\n\n'
+    '1. （格式：负责人 — 事项 — 时限；缺失标注「待确认」，使用编号列表）\n\n'
     '## 备忘\n'
     '- （关键风险、未决事项、需跟进点）\n\n'
-    '要求：剔除口语冗余、重复、停顿词（如「那个」「呃」）；使用中文书面语，精简凝练；'
+    '要求：剔除口语冗余、重复、停顿词（如「那个」「呃」）；使用中文书面语，精简凝练；\n'
+    '保留具体时间、金额、系统/产品原名（如 OceanBase、星环TDH）不缩写；\n'
+    '核心结论与行动项使用编号列表，每条独立且可验证。\n'
     '若某小节无内容则写「未提及」。\n'
     '【严守以下约束，违反视为严重错误】\n'
     '1. 严禁臆造参会人员的姓名、单位、职务。若录音中无人自报身份，'
@@ -462,34 +464,112 @@ MEETING_SYSTEM = (
 )
 
 
-def summarize_meeting(raw_text, terms=None, context=None):
-    """把逐字稿提炼为结构化会议纪要；失败返回 ('', 错误原因)。"""
+# 长录音分段摘要点（map-reduce 第一阶段）：只抽事实，不要求完整结构
+BLOCK_SYSTEM = (
+    '你是会议录音转写稿的分段整理助手。下面是一段会议转写，请提取关键事实要点：'
+    '决策、结论、行动项（含负责人与时限，缺失标「待确认」）、风险、数字、需跟进事项。'
+    '保留具体时间、金额、系统/产品原名（如 OceanBase、星环TDH）不缩写。'
+    '剔除口语冗余、重复、停顿词；输出为要点列表，每条以「- 」开头，不带标题、不加解释。'
+    '不要臆造文本中没有的人名/单位；无法确定立场时标注「待确认」。'
+    '本段若无实质内容，仅输出「（无要点）」。'
+)
+
+
+def _split_chunks(text, max_chars=4000):
+    """按段落切块；单段超长则尽量在标点处硬切，避免跨段截断语义。"""
+    if len(text) <= max_chars:
+        return [text]
+    chunks, buf = [], ''
+    for para in text.split('\n'):
+        if not para.strip():
+            continue
+        if len(buf) + len(para) + 1 <= max_chars:
+            buf = (buf + '\n' + para) if buf else para
+        else:
+            if buf:
+                chunks.append(buf)
+            while len(para) > max_chars:
+                cut = para[:max_chars]
+                for sep in ('。', '；', '，', '！', '？', ';', ',', ' '):
+                    idx = cut.rfind(sep)
+                    if idx > int(max_chars * 0.6):
+                        cut = cut[:idx + 1]
+                        break
+                chunks.append(cut)
+                para = para[len(cut):]
+            buf = para
+    if buf:
+        chunks.append(buf)
+    return chunks or [text]
+
+
+def summarize_meeting(raw_text, terms=None, context=None, profile=None):
+    """把逐字稿提炼为结构化会议纪要；长文本分块摘要再汇总(map-reduce)。失败返回 ('', 错误原因)。"""
     if not raw_text or not raw_text.strip():
         return '', None
     if not DEEPSEEK_API_KEY:
         return '', '未配置 DEEPSEEK_API_KEY，已保留原始转写'
-    user = raw_text.strip()
-    if terms:
-        try:
-            term_list = [t for t in terms if t and str(t).strip()]
-        except Exception:  # noqa: BLE001
-            term_list = []
-        if term_list:
-            user += '\n\n【业务术语提示】整理时请准确保留以下术语：' + '、'.join(term_list)
-    if context and str(context).strip():
-        ctx = str(context).strip()
-        user += '\n\n【已知会议背景（用户提供，优先采信，但不得据此虚构录音中没有的细节）】' + ctx
+    # 风格档案（rules/samples）注入最终汇总，使纪要贴合用户写作偏好
+    style_block = ''
+    if profile:
+        if profile.get('rules'):
+            rules = [r for r in profile['rules'] if str(r).strip()]
+            if rules:
+                style_block += '\n【写作风格要点（整理纪要时参考其措辞与详略）】\n' + '\n'.join('- ' + r for r in rules)
+        if profile.get('samples'):
+            samps = [s for s in profile['samples'] if isinstance(s, dict) and (s.get('before') or s.get('after'))]
+            if samps:
+                style_block += '\n【对照样例（初稿一行 / 终稿一行，参考其详略与措辞）】'
+                for s in samps:
+                    style_block += '\n- 初稿：' + (s.get('before') or '') + '\n  终稿：' + (s.get('after') or '')
+
+    def build_user(content):
+        u = content.strip()
+        if terms:
+            try:
+                tl = [t for t in terms if str(t).strip()]
+            except Exception:  # noqa: BLE001
+                tl = []
+            if tl:
+                u += '\n\n【业务术语提示】整理时请准确保留以下术语：' + '、'.join(tl)
+        if context and str(context).strip():
+            u += '\n\n【已知会议背景（用户提供，优先采信，但不得据此虚构录音里没有的细节）】' + str(context).strip()
+        return u
+
+    user = build_user(raw_text.strip())
+    chunks = _split_chunks(raw_text)
+    if len(chunks) == 1:
+        messages = [
+            {'role': 'system', 'content': MEETING_SYSTEM + style_block},
+            {'role': 'user', 'content': user},
+        ]
+        text, err = call_deepseek(messages, model='deepseek-chat', max_tokens=3500, temperature=0.3)
+        if err:
+            return '', err
+        return (text or '').strip(), None
+
+    # 长稿：每块先摘要点，再汇总（map-reduce），避免单次直灌导致中段信息丢失
+    block_points = []
+    for i, ch in enumerate(chunks):
+        bm = [
+            {'role': 'system', 'content': BLOCK_SYSTEM},
+            {'role': 'user', 'content': ch},
+        ]
+        bt, berr = call_deepseek(bm, model='deepseek-chat', max_tokens=900, temperature=0.3)
+        if berr:
+            block_points.append('（该段处理异常，保留原始片段）\n' + ch[:600])
+        else:
+            block_points.append((bt or '（无要点）').strip())
+    combined = '\n\n'.join('【第%d段 / 共%d段 要点】\n%s' % (i + 1, len(chunks), p) for i, p in enumerate(block_points))
     messages = [
-        {'role': 'system', 'content': MEETING_SYSTEM},
+        {'role': 'system', 'content': MEETING_SYSTEM + style_block},
         {'role': 'user', 'content': user},
     ]
-    text, err = call_deepseek(messages, model='deepseek-chat', max_tokens=2000, temperature=0.3)
+    text, err = call_deepseek(messages, model='deepseek-chat', max_tokens=3500, temperature=0.3)
     if err:
         return '', err
     return (text or '').strip(), None
 
-
-@app.route('/api/asr/transcribe', methods=['POST', 'OPTIONS'])
 def asr_transcribe_route():
     if request.method == 'OPTIONS':
         return ('', 204)
@@ -527,7 +607,10 @@ def asr_summarize_route():
         return jsonify({'code': 2, 'msg': '缺少 text'}), 400
     terms = d.get('terms') or None
     context = d.get('context') or None
-    summary, llm_err = summarize_meeting(text, terms, context)
+    rules = d.get('rules') or None
+    samples = d.get('samples') or None
+    profile = {'rules': rules or [], 'samples': samples or []} if (rules or samples) else None
+    summary, llm_err = summarize_meeting(text, terms, context, profile)
     resp = {'code': 0}
     if summary:
         resp['summary'] = summary
