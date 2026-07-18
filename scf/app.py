@@ -391,17 +391,30 @@ def asr_transcribe_route():
         pass
     if err:
         return jsonify({'code': 3, 'msg': err}), 502
-    # 纪要提炼（LLM 失败不阻断，降级为原始转写）
+    # 两步式：transcribe 只返回原文，纪要由 /api/asr/summarize 显式生成
+    return jsonify({'code': 0, 'text': text})
+
+
+@app.route('/api/asr/summarize', methods=['POST', 'OPTIONS'])
+def asr_summarize_route():
+    """对已转写的原文 + 用户#标注 提炼结构化纪要。"""
+    if request.method == 'OPTIONS':
+        return ('', 204)
+    if not authorized():
+        return auth_fail()
+    d = request.get_json(force=True, silent=True) or {}
+    text = (d.get('text') or '').strip()
+    if not text:
+        return jsonify({'code': 2, 'msg': '缺少 text'}), 400
     terms = d.get('terms') or None
     context = d.get('context') or None
     summary, llm_err = summarize_meeting(text, terms, context)
-    resp = {'code': 0, 'text': text}
+    resp = {'code': 0}
     if summary:
         resp['summary'] = summary
     else:
         resp['summary'] = ''
-        if llm_err:
-            resp['llm_warn'] = llm_err
+        resp['llm_warn'] = llm_err or '纪要提炼失败，已保留原文'
     return jsonify(resp)
 
 

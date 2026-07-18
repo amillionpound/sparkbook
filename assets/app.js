@@ -245,14 +245,13 @@
         <button type="button" id="f-rec-go" class="btn btn-ghost">🎙 转写并填入</button>
         <span id="f-rec-status" class="muted small"></span>
       </div>
-      <div class="rec-ctx-wrap">
-        <label class="small muted">转写前可补充背景，让 AI 更准确（均选填、可不精确）</label>
-        <input id="f-rec-topic" placeholder="会议主题（可不精确，如：与XX厂商需求对接）" />
-        <input id="f-rec-self" placeholder="我的身份 / 是否发言（如：我方甲方；不确定自己是否发言）" />
-        <input id="f-rec-scale" placeholder="参会规模 / 立场（如：约3人，厂商+行内两方）" />
-        <textarea id="f-rec-ctx" class="textout-area" placeholder="其他补充（选填）"></textarea>
-      </div>`);
-      h += field('纪要 / 正文', `<textarea id="f-body">${esc(e.body || '')}</textarea>`);
+      <p class="muted small">转写后原文填入下方「转写原文」，用#行写你的补充/修正，再点「汇总总结」生成纪要。</p>`);
+      h += field('转写原文 / 正文', `<textarea id="f-body">${esc(e.body || '')}</textarea>`);
+      h += field('AI 纪要（可编辑）', `<div class="rec-inline">
+        <button type="button" id="f-sum-go" class="btn btn-ghost">📝 汇总总结</button>
+        <span id="f-sum-status" class="muted small"></span>
+      </div>
+      <textarea id="f-summary" class="textout-area">${esc(e.summary || '')}</textarea>`);
     } else if (type === 'ledger') {
       // 账本：日期+时间合并为单个文本框（不依赖控件）；新建默认当前时刻，编辑显示已保存时刻
       const p2 = n => String(n).padStart(2, '0');
@@ -304,17 +303,30 @@
         try {
           const key = await uploadAudio(file);
           $('#f-rec-status').textContent = '云端转写中（可能需1-2分钟）…';
+          const res = await transcribeAudio(key);
+          const raw = (res.text || '').trim();
+          const ta = $('#f-body');
+          ta.value = (ta.value ? ta.value + '\n\n' : '') + (raw ? raw + '\n\n# ' : '# ');
+          $('#f-rec-status').textContent = '已填入原文，可编辑';
+          toast('已填入转写原文，补充后点「汇总总结」');
+        } catch (e) { $('#f-rec-status').textContent = ''; toast('转写失败：' + (e.message || e)); }
+      };
+    }
+    // 会议纪要生成：从「转写原文」提炼，# 行作为用户补充/修正
+    const sumGo = $('#f-sum-go');
+    if (sumGo) {
+      sumGo.onclick = async () => {
+        const { transcript, context } = splitTranscript($('#f-body').value);
+        if (!transcript) { toast('没有可总结的转写原文'); return; }
+        $('#f-sum-status').textContent = 'AI 提炼中…';
+        try {
           const sp = store.styleProfile();
           const terms = (sp && sp.terms) ? sp.terms : [];
-          const ctx = recContext('f-');
-          const res = await transcribeAudio(key, terms, ctx);
-          const fill = res.summary || res.text;
-          const ta = $('#f-body');
-          ta.value = (ta.value ? ta.value + '\n\n' : '') + fill;
-          $('#f-rec-status').textContent = res.summary ? '已填入提炼纪要' : '已填入原稿（纪要提炼未成功）';
+          const res = await summarizeMeeting(transcript, context, terms);
+          $('#f-summary').value = res.summary || '';
+          $('#f-sum-status').textContent = res.summary ? '已生成（可编辑）' : '生成失败，已保留原文';
           if (res.llmWarn) toast(res.llmWarn);
-          else toast('录音已转写为工作纪要');
-        } catch (e) { $('#f-rec-status').textContent = ''; toast('转写失败：' + (e.message || e)); }
+        } catch (e) { $('#f-sum-status').textContent = ''; toast('总结失败：' + (e.message || e)); }
       };
     }
     const first = $('#editor-body').querySelector('input,textarea,select');
@@ -336,6 +348,7 @@
       const md = ($('#f-mdate').value || '').trim();
       if (md && !/^\d{4}-\d{2}-\d{2}( \d{1,2}:\d{2})?$/.test(md)) { toast('会议时间格式应为 YYYY-MM-DD 或 YYYY-MM-DD HH:mm'); return null; }
       patch.meetingDate = md;
+      patch.summary = ($('#f-summary') ? $('#f-summary').value : '') || '';
     } else if (type === 'ledger') {
       patch.amount = parseFloat($('#f-amt').value) || 0;
       patch.direction = ($('#f-dir').querySelector('.on') || {}).dataset?.d || 'out';
@@ -486,7 +499,7 @@
 
   // ---------- 录音转写（P5） ----------
   function openRecorder() {
-    $('#rec-result').value = ''; $('#rec-save').disabled = true; $('#rec-status').textContent = '';
+    $('#rec-result').value = ''; $('#rec-summary').value = ''; $('#rec-save').disabled = true; $('#rec-status').textContent = '';
     $('#recorder').classList.remove('hidden');
   }
   // 中继上传：前端把音频 POST 给 SCF，SCF 用服务端密钥写 COS（免浏览器直连 CORS 痛点）
@@ -501,29 +514,35 @@
     if (d.code !== 0) throw new Error(d.msg || ('code ' + d.code));
     return d.key;
   }
-  // 把结构化背景字段拼成 context 文本喂给 AI（prefix 区分会议编辑器内嵌[f-]与独立弹层[]）
-  function recContext(prefix) {
-    const parts = [];
-    const topic = document.getElementById(prefix + 'rec-topic');
-    const self = document.getElementById(prefix + 'rec-self');
-    const scale = document.getElementById(prefix + 'rec-scale');
-    const extra = document.getElementById(prefix + 'rec-ctx');
-    if (topic && topic.value.trim()) parts.push('会议主题（用户自述，可能不精确，仅供参考）：' + topic.value.trim());
-    if (self && self.value.trim()) parts.push('我的身份/是否发言（用户自述，可据此标注用户立场）：' + self.value.trim());
-    if (scale && scale.value.trim()) parts.push('参会规模/立场（用户自述）：' + scale.value.trim());
-    if (extra && extra.value.trim()) parts.push(extra.value.trim());
-    return parts.join('\n');
+  // 把单框内容拆成：转写原文（非#行） + 用户#标注（context）
+  function splitTranscript(val) {
+    const lines = (val || '').split('\n');
+    const trans = [], ctx = [];
+    for (const ln of lines) {
+      if (ln.trimStart().startsWith('#')) ctx.push(ln.replace(/^\s*#\s?/, '').trim());
+      else trans.push(ln);
+    }
+    return { transcript: trans.join('\n').trim(), context: ctx.filter(Boolean).join('\n').trim() };
   }
-  async function transcribeAudio(key, terms, context) {
-    const body = { key, terms: terms || [] };
-    if (context && context.trim()) body.context = context.trim();
+  async function transcribeAudio(key) {
+    const body = { key };
     const r = await fetch(API_BASE + '/api/asr/transcribe', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     });
     const d = await r.json().catch(() => ({}));
     if (d.code !== 0) throw new Error(d.msg || ('code ' + d.code));
-    return { text: d.text || '', summary: d.summary || '', llmWarn: d.llm_warn || '' };
+    return { text: d.text || '' };
+  }
+  async function summarizeMeeting(transcript, context, terms) {
+    const body = { text: transcript || '', context: context || '', terms: terms || [] };
+    const r = await fetch(API_BASE + '/api/asr/summarize', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (d.code !== 0) throw new Error(d.msg || ('code ' + d.code));
+    return { summary: d.summary || '', llmWarn: d.llm_warn || '' };
   }
   async function recTranscribe() {
     const file = $('#rec-file').files[0];
@@ -533,24 +552,37 @@
     try {
       const key = await uploadAudio(file);
       $('#rec-status').textContent = '云端转写中（可能需1-2分钟）…';
+      const res = await transcribeAudio(key);
+      const raw = (res.text || '').trim();
+      // 默认预置第一个 #，方便用户直接写补充/修正
+      $('#rec-result').value = raw + (raw ? '\n\n# ' : '# ');
+      $('#rec-summary').value = '';
+      $('#rec-save').disabled = !(raw && raw.trim());
+      $('#rec-status').textContent = '已出原文（可编辑，用#行写你的补充）';
+      toast('转写完成，请检查/补充后点「汇总总结」');
+    } catch (e) { $('#rec-status').textContent = ''; toast('转写失败：' + (e.message || e)); }
+  }
+  async function recSummarize() {
+    const { transcript, context } = splitTranscript($('#rec-result').value);
+    if (!transcript) { toast('没有可总结的转写原文'); return; }
+    $('#rec-status').textContent = 'AI 提炼纪要中…';
+    try {
       const sp = store.styleProfile();
       const terms = (sp && sp.terms) ? sp.terms : [];
-      const ctx = recContext('');
-      const res = await transcribeAudio(key, terms, ctx);
-      const fill = res.summary || res.text;
-      $('#rec-result').value = fill;
-      $('#rec-save').disabled = !(fill && fill.trim());
-      $('#rec-status').textContent = res.summary ? '完成（已提炼为纪要）' : '完成（已保留原稿）';
+      const res = await summarizeMeeting(transcript, context, terms);
+      $('#rec-summary').value = res.summary || '';
+      $('#rec-status').textContent = res.summary ? '已生成纪要（可再编辑）' : '纪要生成失败，已保留原文';
       if (res.llmWarn) toast(res.llmWarn);
-    } catch (e) { $('#rec-status').textContent = ''; toast('转写失败：' + (e.message || e)); }
+    } catch (e) { $('#rec-status').textContent = ''; toast('总结失败：' + (e.message || e)); }
   }
   async function recSave() {
     const text = $('#rec-result').value.trim();
     if (!text) { toast('没有可保存的内容'); return; }
+    const summary = ($('#rec-summary').value || '').trim();
     const now = defaultDateTime();
-    store.addEntry({ type: 'meeting', title: '会议录音纪要 ' + now.slice(0, 10), meetingDate: now, body: text });
+    store.addEntry({ type: 'meeting', title: '会议录音 ' + now.slice(0, 10), meetingDate: now, body: text, summary: summary });
     await sync();
-    toast('已保存为会议记录');
+    toast('已保存为会议记录（原文+纪要）');
     $('#recorder').classList.add('hidden');
   }
 
@@ -570,7 +602,8 @@
       return `- [任务] ${e.title || ''}${e.dueDate ? `（截止 ${e.dueDate}）` : ''}${e.done ? '（已完成）' : ''}：${e.body || ''}`;
     }
     if (e.type === 'meeting') {
-      return `- [会议] 参加：${e.title || ''}（${e.meetingDate || ''}）\n  ${e.body || ''}`;
+      const m = (e.summary && e.summary.trim()) ? e.summary : (e.body || '');
+      return `- [会议] 参加：${e.title || ''}（${e.meetingDate || ''}）\n  ${m}`;
     }
     if (e.type === 'inspiration') return `- [灵感] ${e.body || ''}`;
     return `- ${e.body || e.title || ''}`;
@@ -863,6 +896,7 @@
     $('#rec-open-btn').onclick = openRecorder;
     $('#rec-close').onclick = () => $('#recorder').classList.add('hidden');
     $('#rec-go').onclick = recTranscribe;
+    $('#rec-sum').onclick = recSummarize;
     $('#rec-save').onclick = recSave;
     $('#daily-selall').onclick = () => { document.querySelectorAll('#daily-checklist input').forEach(c => c.checked = true); updateDailySelCount(); };
     $('#daily-selnone').onclick = () => { document.querySelectorAll('#daily-checklist input').forEach(c => c.checked = false); updateDailySelCount(); };

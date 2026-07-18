@@ -209,20 +209,21 @@
         <div class="field">
           <input id="rec-file" type="file" accept="audio/*,.mp3,.m4a,.wav,.flac,.ogg,.amr" />
         </div>
-        <div class="field">
-          <label>转写前可补充背景，让 AI 更准确（均选填、可不精确）</label>
-          <input id="rec-topic" placeholder="会议主题（可不精确，如：与XX厂商需求对接）" />
-          <input id="rec-self" placeholder="我的身份 / 是否发言（如：我方甲方；不确定自己是否发言）" />
-          <input id="rec-scale" placeholder="参会规模 / 立场（如：约3人，厂商+行内两方）" />
-          <textarea id="rec-ctx" class="textout-area" placeholder="其他补充（选填）"></textarea>
-        </div>
         <div class="daily-row">
           <button id="rec-go" class="btn btn-primary">开始转写</button>
           <span id="rec-status" class="muted small"></span>
         </div>
         <div class="field">
-          <label>转写结果（可编辑）</label>
+          <label>转写原文（可编辑；用 # 行写你的补充/修正，第一个 # 已预填）</label>
           <textarea id="rec-result" class="textout-area"></textarea>
+        </div>
+        <div class="daily-row">
+          <button id="rec-sum" class="btn btn-ghost">📝 汇总总结</button>
+          <span class="muted small">把上方原文+你的#标注提炼为纪要</span>
+        </div>
+        <div class="field">
+          <label>纪要（可再编辑后保存）</label>
+          <textarea id="rec-summary" class="textout-area"></textarea>
         </div>
       </div>
       <div class="modal-foot">
@@ -237,7 +238,7 @@
 
   <script src="assets/crypto.js?v=20260717m"></script>
   <script src="assets/store.js?v=20260717m"></script>
-  <script src="assets/app.js?v=20260718a"></script>
+  <script src="assets/app.js?v=20260718b"></script>
   <script>
     if ('serviceWorker' in navigator) {
       window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
