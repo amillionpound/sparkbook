@@ -448,7 +448,26 @@
       h += field('标题（可空）', `<input id="f-title" value="${esc(e.title || '')}" placeholder="一句话概括，如：与厂商确认 OB 迁移方案" />`);
       h += field('内容', `<textarea id="f-body">${esc(e.body || '')}</textarea>`);
     } else if (type === 'daily') {
-      h += field('日期 / 标题（可改）', `<input id="f-title" value="${esc(e.title || '')}" placeholder="如 2026-07-18" />`);
+      const today = fmtYMD(new Date());
+      const dInit = (e && e.title && /^\d{4}-\d{2}-\d{2}$/.test(e.title)) ? e.title : today;
+      h += field('日报日期（仅当天）', `<input id="f-daily-date" type="date" value="${esc(dInit)}" />`);
+      h += field('标题（可改，默认=日期）', `<input id="f-title" value="${esc(e.title || '')}" placeholder="${today}" />`);
+      h += `<div class="field"><label>合并当天记录（会议 + 工作流水）</label>
+        <div class="daily-row">
+          <button type="button" id="f-daily-rec" class="btn btn-ghost">🎙 录音转写</button>
+          <button type="button" id="f-daily-selall" class="mini-btn">全选</button>
+          <button type="button" id="f-daily-selnone" class="mini-btn">清空</button>
+          <span id="f-daily-selcount" class="muted small"></span>
+        </div>
+        <div id="f-daily-checklist" class="daily-checklist"></div></div>`;
+      h += field('追加素材（粘贴流水账 / 自由记录，与勾选项合并）', `<textarea id="f-daily-paste" class="sp-area" placeholder="可粘贴当天其他流水账或自由补充，将并入生成素材"></textarea>`);
+      h += field('补充背景（本篇临时，不保存、不进入风格进化）', `<textarea id="f-daily-bg" class="sp-area" placeholder="如：今天重点向 VP 汇报进度；语气偏正式"></textarea>`);
+      h += `<div class="daily-row">
+        <button type="button" id="f-daily-gen" class="btn btn-primary">生成日报</button>
+        <button type="button" id="f-daily-revise" class="btn btn-primary">修改（采纳 + 进化）</button>
+        <button type="button" id="f-daily-copy" class="btn">复制</button>
+        <span class="muted small">生成 → 编辑正文 → 点「保存」落库</span>
+      </div>`;
       h += field('日报内容', `<textarea id="f-body">${esc(e.body || '')}</textarea>`);
     } else { // misc
       h += field('内容', `<textarea id="f-body">${esc(e.body || '')}</textarea>`);
@@ -520,6 +539,21 @@
         } catch (e) { $('#f-sum-status').textContent = ''; toast('总结失败：' + (e.message || e)); }
       };
     }
+    // 日报编辑器：渲染当天勾选清单 + 绑定生成/修改/复制/录音/全选
+    if (editorType === 'daily') {
+      dailyLast = null; // 每次打开日报编辑器重置初稿比对，避免跨次误用
+      const render = () => renderEditorDailyChecklist();
+      render();
+      const dEl = $('#f-daily-date');
+      if (dEl) dEl.onchange = render;
+      const recB = $('#f-daily-rec');
+      if (recB) recB.onclick = () => { openRecorder(); };
+      const sa = $('#f-daily-selall'); if (sa) sa.onclick = () => { document.querySelectorAll('#f-daily-checklist input').forEach(c => c.checked = true); updateEditorDailySelCount(); };
+      const sn = $('#f-daily-selnone'); if (sn) sn.onclick = () => { document.querySelectorAll('#f-daily-checklist input').forEach(c => c.checked = false); updateEditorDailySelCount(); };
+      const gen = $('#f-daily-gen'); if (gen) gen.onclick = () => editorDailyGenerate();
+      const rev = $('#f-daily-revise'); if (rev) rev.onclick = () => editorDailyRevise();
+      const cpy = $('#f-daily-copy'); if (cpy) cpy.onclick = () => editorDailyCopy();
+    }
     const first = $('#editor-body').querySelector('input,textarea,select');
     if (first) setTimeout(() => first.focus(), 50);
   }
@@ -559,8 +593,13 @@
     } else if (type === 'worklog') {
       patch.title = ($('#f-title').value || '').trim();
     } else if (type === 'daily') {
-      patch.title = ($('#f-title').value || '').trim();
+      const dEl = $('#f-daily-date');
+      const dStr = (dEl ? dEl.value : '').trim() || fmtYMD(new Date());
+      let title = ($('#f-title').value || '').trim();
+      if (!title) title = dStr;
+      patch.title = title;
       patch.category = '工作'; // 日报内部隐藏分类，统一归类工作以贴合数据结构
+      if (!editingId) patch.created = toISOMid(dStr); // 新建时把记录日锚定到所选日期，便于按天归档/回溯
     }
     return patch;
   }
@@ -839,11 +878,20 @@
     await sync();
     toast('已保存为会议记录（原文+纪要）');
     dismissModal('#recorder', { force: true });
+    // 若日报编辑器正打开，刷新当天勾选清单（承接录音转写→自动进日报素材）
+    const ed = $('#editor');
+    if (ed && !ed.classList.contains('hidden')) {
+      const t = $('#f-type');
+      if (t && t.value === 'daily') renderEditorDailyChecklist();
+    }
   }
 
-  // ---------- 日报助手（P4 + 周报模式 P5） ----------
-  let dailyLast = null; // { generated, date, material }
-  let dailyMode = 'day'; // day | week
+  // ---------- 日报（记录类型，在编辑器内编写） ----------
+  // 日报 = 记录的一种类型(daily)。写日报在「日报类型编辑器」内完成：
+  //   选日期(默认今天) → 勾选当天会议+工作流水 → 🎙录音转写(承接) → 追加素材/背景 → 生成 → 填入正文 → 保存落库
+  // 历史日报即在记录列表天然回溯/编辑（点 📰日报 类型筛选项即可）。
+  let dailyLast = null; // { generated, date, material } 用于「修改」差异比对
+  let editorDailyDate = null; // 当前编辑器所选日报日期
 
   function fmtDateOnly(iso) { return (iso || '').slice(0, 10); }
 
@@ -900,85 +948,73 @@
     const p = n => String(n).padStart(2, '0');
     return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
   }
-  function weekRange() {
-    const t = new Date();
-    const day = t.getDay(); // 0=周日 .. 6=周六
-    const diffToMon = (day === 0 ? -6 : 1 - day);
-    const mon = new Date(t); mon.setDate(t.getDate() + diffToMon); mon.setHours(0, 0, 0, 0);
-    const sun = new Date(mon); sun.setDate(mon.getDate() + 6);
-    return [fmtYMD(mon), fmtYMD(sun)];
-  }
   // 日报只采纳：会议 + 分类为"工作"的条目；日报类型本身不参与生成（防自喂循环）
   function isDailySource(e) {
     if (e.type === 'daily') return false;
     if (e.type === 'meeting') return true;
     return e.category === '工作';
   }
-  function dailyRangeItems() {
-    const all = store.list();
-    if (dailyMode === 'week') {
-      const s = $('#daily-start').value, e = $('#daily-end').value;
-      if (!s || !e) return [];
-      return all.filter(x => { const d = fmtDateOnly(x.created); return d >= s && d <= e && isDailySource(x); });
-    }
-    const d = $('#daily-date').value;
-    if (!d) return [];
-    return all.filter(x => fmtDateOnly(x.created) === d && isDailySource(x));
+  // 编辑器内：所选日期当天的可合并源（会议 + 工作流水）
+  function editorDailyItems(dateStr) {
+    if (!dateStr) return [];
+    return store.list().filter(x => fmtDateOnly(x.created) === dateStr && isDailySource(x));
   }
-  function renderDailyChecklist() {
-    const box = $('#daily-checklist');
-    const items = dailyRangeItems();
+  // 渲染编辑器内勾选清单（依据 #f-daily-date）
+  function renderEditorDailyChecklist() {
+    const box = $('#f-daily-checklist');
+    if (!box) return;
+    const d = $('#f-daily-date') ? $('#f-daily-date').value : '';
+    editorDailyDate = d;
+    const items = editorDailyItems(d);
     if (!items.length) {
-      box.innerHTML = '<div class="muted small">该范围没有记录。可在「追加素材」粘贴流水账。</div>';
-      updateDailySelCount();
+      box.innerHTML = '<div class="muted small">当天没有会议 / 工作流水。可在「追加素材」粘贴流水账，或点 🎙 录音转写后自动出现在此。</div>';
+      updateEditorDailySelCount();
       return;
     }
-    box.innerHTML = items.map(e =>
-      `<label class="daily-check"><input type="checkbox" data-id="${e.id}" checked />
-        <span>${TYPES[e.type].icon} ${fmtDate(e.created)} · ${entrySummary(e)}</span></label>`
-    ).join('');
-    box.querySelectorAll('input').forEach(c => c.onchange = updateDailySelCount);
-    updateDailySelCount();
+    const groups = { meeting: [], worklog: [] };
+    items.forEach(e => { if (e.type === 'meeting') groups.meeting.push(e); else groups.worklog.push(e); });
+    const g = (title, arr) => !arr.length ? '' :
+      `<div class="daily-grp">${title}</div>` + arr.map(e =>
+        `<label class="daily-check"><input type="checkbox" data-id="${e.id}" checked />
+          <span>${TYPES[e.type].icon} ${fmtDate(e.created)} · ${esc(entrySummary(e))}</span></label>`).join('');
+    box.innerHTML = g('🎙 会议', groups.meeting) + g('🗒️ 工作流水（当天）', groups.worklog);
+    box.querySelectorAll('input').forEach(c => c.onchange = updateEditorDailySelCount);
+    updateEditorDailySelCount();
   }
-  function updateDailySelCount() {
-    const n = document.querySelectorAll('#daily-checklist input[type=checkbox]:checked').length;
-    const total = document.querySelectorAll('#daily-checklist input[type=checkbox]').length;
-    $('#daily-selcount').textContent = `${n}/${total} 已选`;
+  function updateEditorDailySelCount() {
+    const box = $('#f-daily-checklist'); if (!box) return;
+    const n = box.querySelectorAll('input:checked').length;
+    const total = box.querySelectorAll('input').length;
+    const el = $('#f-daily-selcount'); if (el) el.textContent = `${n}/${total} 已选`;
   }
-  function getDailySelected() {
-    const ids = [...document.querySelectorAll('#daily-checklist input[type=checkbox]:checked')].map(c => c.dataset.id);
+  function getEditorDailySelected() {
+    const box = $('#f-daily-checklist'); if (!box) return [];
+    const ids = [...box.querySelectorAll('input:checked')].map(c => c.dataset.id);
     return ids.map(id => store.get(id)).filter(Boolean);
   }
 
-  async function dailyGenerate() {
-    const dateStr = dailyMode === 'week'
-      ? `${$('#daily-start').value} ~ ${$('#daily-end').value}`
-      : $('#daily-date').value;
-    if (!dateStr || dateStr === ' ~ ') { toast(dailyMode === 'week' ? '请选择起止日期' : '请选择日期'); return; }
-    const sel = getDailySelected();
-    const paste = ($('#daily-paste').value || '').trim();
+  // 编辑器内生成日报
+  async function editorDailyGenerate() {
+    const dateStr = ($('#f-daily-date') ? $('#f-daily-date').value : '') || fmtYMD(new Date());
+    if (!dateStr) { toast('请选择日报日期'); return; }
+    const sel = getEditorDailySelected();
+    const paste = ($('#f-daily-paste') ? $('#f-daily-paste').value : '').trim();
     let material = formatMaterial(sel);
     if (paste) material += (material ? '\n' : '') + paste;
-    if (!material.trim()) { toast('请勾选条目或在「追加素材」粘贴'); return; }
+    if (!material.trim()) { toast('请勾选当天条目或在「追加素材」粘贴'); return; }
     const sp = store.styleProfile();
     const sys = DAILY_SEED + '\n\n# 已习得的风格偏好（动态积累）\n' + formatStyleProfile(sp);
-    const bg = ($('#daily-bg').value || '').trim();
+    const bg = ($('#f-daily-bg') ? $('#f-daily-bg').value : '').trim();
     const user = `请基于以下 ${dateStr} 的素材生成当日精简日报。\n\n【素材】\n${material}` +
       (bg ? `\n\n【补充背景 / 要求】\n${bg}` : '') +
       buildRequirementContext(material) +
       `\n\n要求：全文可复制、无特殊格式、段落间不留空行、每篇2-4点、聚焦进度/风险/资源/验收；如有会议素材必须包含「参加：标题」。`;
     const text = await callAI('generate', [{ role: 'system', content: sys }, { role: 'user', content: user }]);
     if (text != null) {
-      $('#daily-result').value = text;
+      $('#f-body').value = text;
+      const tEl = $('#f-title'); if (tEl && !tEl.value.trim()) tEl.value = dateStr;
       dailyLast = { generated: text, date: dateStr, material };
-      // 存入「日报」类型条目（历史库），并增量挖掘需求登记册
-      const dailyDate = dailyMode === 'week'
-        ? ($('#daily-start').value || dateStr.split(' ~ ')[0].trim())
-        : $('#daily-date').value;
-      const de = store.addEntry({ type: 'daily', title: dateStr, body: text, category: '工作', created: toISOMid(dailyDate) });
-      await mineRequirements([{ id: de.id, date: dailyDate, body: text }]);
-      renderList(); renderCats();
-      toast('已生成并存入日报');
+      toast('已生成日报（可编辑后点「保存」落库）');
     }
   }
   // 需求登记册：从素材中匹配已登记需求，注入生成 prompt（LLM 用全称书写）
@@ -1038,8 +1074,8 @@
     renderSettingsRequirements();
   }
 
-  function dailyCopy() {
-    const t = $('#daily-result').value;
+  function editorDailyCopy() {
+    const t = $('#f-body').value;
     if (!t.trim()) { toast('没有可复制的内容'); return; }
     navigator.clipboard?.writeText(t).then(() => toast('已复制'), () => toast('复制失败'));
   }
@@ -1055,10 +1091,9 @@
       };
     } catch { return null; }
   }
-  async function dailyRevise() {
-    const revised = $('#daily-result').value;
+  async function editorDailyRevise() {
+    const revised = $('#f-body').value;
     if (!revised.trim()) { toast('没有可采纳的内容'); return; }
-    // 无论有无差异，先采纳复制
     navigator.clipboard?.writeText(revised).then(() => toast('已复制'), () => toast('复制失败'));
     if (!dailyLast || revised.trim() === (dailyLast.generated || '').trim()) {
       toast('无差异，仅复制');
@@ -1083,8 +1118,7 @@
     }
   }
 
-  // 风格档案读写
-  // 冷启动：从 DAILY_SEED 提取初始术语/规则（仅当用户从未编辑过风格档案时）
+  // 风格档案读写（已迁移到「设置」弹层）
   const SEED_TERMS = [
     '对公集市', '同业集市', 'OceanBase', 'Oracle模式', '星环TDH',
     '经营平台埋点', '厂商对接', '成本管控', 'VP流程', '绩效重算', '系统画像',
@@ -1099,7 +1133,6 @@
   ];
   function loadStyleUI() {
     let sp = store.styleProfile() || { terms: [], rules: [], samples: [] };
-    // 冷启动：三项全空时自动填入种子
     if ((!sp.terms || !sp.terms.length) && (!sp.rules || !sp.rules.length) && (!sp.samples || !sp.samples.length)) {
       sp = { terms: SEED_TERMS.slice(), rules: SEED_RULES.slice(), samples: [] };
       store.saveStyleProfile(sp);
@@ -1124,33 +1157,6 @@
     store.saveStyleProfile(sp);
     sync().then(() => toast('风格档案已保存'));
   }
-
-  function switchDailyMode(mode) {
-    dailyMode = mode;
-    $('#daily-mode').querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.mode === mode));
-    $('#daily-dayrow').classList.toggle('hidden', mode !== 'day');
-    $('#daily-weekrow').classList.toggle('hidden', mode !== 'week');
-    renderDailyChecklist();
-  }
-  function openDaily() {
-    const t = new Date();
-    const p = n => String(n).padStart(2, '0');
-    $('#daily-date').value = `${t.getFullYear()}-${p(t.getMonth() + 1)}-${p(t.getDate())}`;
-    const [ws, we] = weekRange();
-    $('#daily-start').value = ws; $('#daily-end').value = we;
-    switchDailyMode('day');
-    $('#daily-paste').value = ''; $('#daily-bg').value = ''; $('#daily-result').value = '';
-    dailyLast = null;
-    switchDailyTab('gen');
-    openModal('#daily');
-  }
-  function switchDailyTab(tab) {
-    $('#daily-tabs').querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.tab === tab));
-    $('#daily-gen').classList.toggle('hidden', tab !== 'gen');
-    $('#daily-style').classList.toggle('hidden', tab !== 'style');
-    if (tab === 'style') loadStyleUI();
-  }
-
   // ---------- 事件绑定 ----------
   function bind() {
     $('#unlock-btn').onclick = () => {
@@ -1200,24 +1206,13 @@
     $('#export-btn').onclick = openExport;
     $('#summary-btn').onclick = openSummary;
     $('#ls-close').onclick = () => dismissModal('#ledger-summary');
-    $('#daily-btn').onclick = openDaily;
-    $('#daily-close').onclick = () => dismissModal('#daily');
-    $('#daily-tabs').querySelectorAll('button').forEach(b => b.onclick = () => switchDailyTab(b.dataset.tab));
-    $('#daily-mode').querySelectorAll('button').forEach(b => b.onclick = () => switchDailyMode(b.dataset.mode));
-    $('#daily-date').onchange = renderDailyChecklist;
-    $('#daily-start').onchange = renderDailyChecklist;
-    $('#daily-end').onchange = renderDailyChecklist;
-    $('#rec-btn').onclick = openRecorder;
+    // 录音转写（独立弹层，仍由底部「🎙 录音转写」按钮唤起；日报编辑器内也有同名按钮唤起同一弹层）
     $('#rec-open-btn').onclick = openRecorder;
     $('#rec-close').onclick = () => dismissModal('#recorder');
     $('#rec-go').onclick = recTranscribe;
     $('#rec-sum').onclick = recSummarize;
     $('#rec-save').onclick = recSave;
-    $('#daily-selall').onclick = () => { document.querySelectorAll('#daily-checklist input').forEach(c => c.checked = true); updateDailySelCount(); };
-    $('#daily-selnone').onclick = () => { document.querySelectorAll('#daily-checklist input').forEach(c => c.checked = false); updateDailySelCount(); };
-    $('#daily-gen-btn').onclick = dailyGenerate;
-    $('#daily-copy').onclick = dailyCopy;
-    $('#daily-revise').onclick = dailyRevise;
+    // 日报类型编辑器内的按钮在 openEditor 内动态绑定（每次打开重新渲染）
     $('#sp-save').onclick = saveStyleUI;
     initSettings();
 

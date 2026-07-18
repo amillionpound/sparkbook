@@ -156,9 +156,14 @@ body {
 .daily-check { display: flex; align-items: flex-start; gap: 8px; font-size: 13px; color: var(--ink); cursor: pointer; line-height: 1.4; }
 .daily-check input { margin-top: 3px; flex-shrink: 0; }
 .daily-check span { white-space: pre-wrap; word-break: break-word; }
+.daily-grp { font-size: 12px; font-weight: 600; color: var(--muted); margin: 6px 0 2px; letter-spacing: .02em; }
 .sp-area { width: 100%; min-height: 70px; border: 1px solid var(--line); border-radius: 9px; padding: 9px 11px;
   font-family: inherit; font-size: 13px; outline: none; resize: vertical; line-height: 1.5; }
 .sp-area:focus { border-color: var(--primary); }
+.set-sp-block { border: 1px dashed var(--line); border-radius: 12px; padding: 12px 14px; margin: 14px 0;
+  background: color-mix(in srgb, var(--primary) 4%, #fff); }
+.set-sp-block > label { font-weight: 600; }
+.set-sp-block .sp-area { min-height: 56px; }
 
 /* 账本汇总 */
 .ls-totals { padding: 12px 14px; background: #f4f6fb; border-radius: 10px; font-size: 14px; margin-bottom: 14px; line-height: 1.8; }
