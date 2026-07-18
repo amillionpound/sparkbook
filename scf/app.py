@@ -5,7 +5,7 @@ sparkbook — SCF Web 函数后端（纯 API 服务）
 职责：
   - /api/ai          调 DeepSeek 生成/进化日报与会议纪要（开启 prompt caching）
   - /api/asr/upload  接收浏览器上传的录音字节（支持分片），服务端用 COS 分块上传写入临时桶（中继，免 CORS/免直连）
-  - /api/asr/transcribe 用腾讯云 ASR 对临时音频转写，返回文本并清理
+  - /api/asr/transcribe 用腾讯云 ASR 对临时音频转写，返回文本并清理（标准版免费额度耗尽自动回退极速版 flash）
   - /api/vault/save   接收浏览器加密信封（密文），服务端凭证写入 COS（中继，免 CORS）
   - /api/vault/load   服务端凭证从 COS 读回加密信封（中继，免 CORS）
   - /api/vault/presign 仅备用：下发 COS 预签名 URL（当前 vault 走中继，未用直传）
@@ -50,6 +50,8 @@ COS_SECRET_ID = os.environ.get('COS_SECRET_ID', '')
 COS_SECRET_KEY = os.environ.get('COS_SECRET_KEY', '')
 COS_BUCKET = os.environ.get('COS_BUCKET', 'sparkbook-1256784020')
 COS_REGION = os.environ.get('COS_REGION', 'ap-guangzhou')
+# 腾讯云 APPID（桶名后缀即 APPID），极速版 flash API 签名需要
+COS_APPID = os.environ.get('COS_APPID', '') or (COS_BUCKET.split('-')[-1] if '-' in COS_BUCKET else '')
 # 可选：设置后 /api/* 需带 Authorization: Bearer <token>；留空则为开发态（开放）
 API_TOKEN = os.environ.get('SPARKBOOK_API_TOKEN', '')
 COS_HOST = '{bucket}.cos.{region}.myqcloud.com'.format(bucket=COS_BUCKET, region=COS_REGION)
@@ -426,9 +428,98 @@ def asr_transcribe(cos_key, expired=3600):
                 return None, 'ASR 任务失败 status={0}'.format(st.Data.Status)
         return None, 'ASR 超时（超过 4 分钟）'
     except TencentCloudSDKException as e:
-        return None, '腾讯云 ASR 错误: ' + str(e)
+        code = getattr(e, 'code', '') or ''
+        emsg = str(e)
+        # 标准版免费额度耗尽 → 自动回退极速版（独立免费包，精度略降，单文件≤2h/100MB）
+        if 'NoFreeAmount' in code or 'NoFreeAmount' in emsg:
+            try:
+                return asr_transcribe_flash(cos_key)
+            except Exception as fe:  # noqa: BLE001
+                return None, '标准版免费额度已用尽；极速版回退失败: ' + str(fe)
+        return None, '腾讯云 ASR 错误: ' + emsg
     except Exception as e:  # noqa: BLE001
         return None, 'ASR 异常: ' + str(e)
+
+
+# ------------------------- 腾讯云 ASR 极速版（flash）回退 -------------------------
+# 当标准版免费额度耗尽(UserHasNoFreeAmount)时，自动改用「录音文件识别极速版」flash API。
+# 极速版是独立 API（非 CreateRecTask），单文件上限 2 小时 / 100MB，精度略低于标准版。
+# 签名算法严格复刻腾讯云官方 tencentcloud-speech-sdk-python 的 FlashRecognizer 实现。
+def _flash_sign_string(params):
+    """params: 已按 key 排序的 [(k,v), ...] 列表（含 appid）。返回待签名原始串。"""
+    signstr = 'POSTasr.cloud.tencent.com/asr/flash/v1/'
+    for k, v in params:
+        if 'appid' in k:
+            signstr += str(v)
+            break
+    signstr += '?'
+    for k, v in params:
+        if 'appid' in k:
+            continue
+        signstr += str(k) + str(v) + '='
+    signstr = signstr[:-1] + '&'
+    signstr = signstr[:-1]
+    return signstr
+
+
+def _flash_sign(signstr, secret_key):
+    hmacstr = hmac.new(secret_key.encode('utf-8'), signstr.encode('utf-8'), hashlib.sha1).digest()
+    return base64.b64encode(hmacstr).decode('utf-8')
+
+
+_FLASH_VOICE_FORMAT = {
+    'mp3': 'mp3', 'm4a': 'm4a', 'wav': 'wav', 'flac': 'flac', 'ogg': 'ogg',
+    'oga': 'ogg', 'aac': 'aac', 'amr': 'amr', 'pcm': 'pcm', 'wma': 'wma',
+    'mp4': 'mp4', 'flv': 'flv', 'm4v': 'm4v', '3gp': '3gp',
+}
+
+
+def asr_transcribe_flash(cos_key):
+    """极速版 flash 转写：下载临时音频字节直接 POST 到 asr.cloud.tencent.com。
+    返回 (text, err)，text=None 表示失败。"""
+    try:
+        cos = _cos_client()
+        # 极速版单文件上限 100MB，先查大小避免无谓下载
+        head = cos.head_object(Bucket=COS_BUCKET, Key=cos_key.lstrip('/'))
+        size = int(head.get('Content-Length', 0) or 0)
+        if size > 100 * 1024 * 1024:
+            return None, '极速版单文件上限 100MB，当前 %.1fMB，无法回退' % (size / 1024.0 / 1024.0)
+        # 取音频字节流（流式上传，避免大文件占满 SCF 内存）
+        obj = cos.get_object(Bucket=COS_BUCKET, Key=cos_key.lstrip('/'))
+        body = obj['Body'].get_stream()
+        ext = cos_key.rsplit('.', 1)[-1].lower() if '.' in cos_key else 'mp3'
+        voice_format = _FLASH_VOICE_FORMAT.get(ext, 'mp3')
+        params = [
+            ('appid', COS_APPID),
+            ('secretid', COS_SECRET_ID),
+            ('timestamp', str(int(time.time()))),
+            ('engine_type', '16k_zh'),
+            ('voice_format', voice_format),
+            ('convert_num_mode', '1'),
+            ('speaker_diarization', '0'),
+            ('filter_dirty', '0'),
+            ('filter_modal', '0'),
+            ('filter_punc', '0'),
+            ('first_channel_only', '1'),
+        ]
+        params.sort(key=lambda x: x[0])
+        signstr = _flash_sign_string(params)
+        signature = _flash_sign(signstr, COS_SECRET_KEY)
+        url = 'https://' + signstr[4:]  # 去掉前缀 POST
+        headers = {
+            'Host': 'asr.cloud.tencent.com',
+            'Content-Type': 'application/octet-stream',
+            'Authorization': signature,
+        }
+        resp = requests.post(url, data=body, headers=headers, timeout=150)
+        data = resp.json()
+        if data.get('code', -1) != 0:
+            return None, '极速版 ASR 错误 code=%s msg=%s' % (data.get('code'), data.get('message'))
+        result = data.get('flash_result') or []
+        texts = [seg.get('text', '') for seg in result if seg.get('text')]
+        return '\n'.join(texts), None
+    except Exception as e:  # noqa: BLE001
+        return None, '极速版调用异常: ' + str(e)
 
 
 # ------------------------- 会议纪要提炼（LLM） -------------------------
