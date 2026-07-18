@@ -60,6 +60,64 @@
     clearTimeout(toast._t); toast._t = setTimeout(() => t.classList.add('hidden'), 1800);
   }
 
+  // ---------- 弹层栈 / 安卓物理返回键拦截 ----------
+  // 维护打开中的弹层栈；每打开一个弹层就 history.pushState 一条记录。
+  // 安卓物理返回键触发 popstate 时，改为关闭最上层弹层（有未保存内容先确认），
+  // 而不是退出 PWA——避免正在填写的内容丢失。无弹层时不做处理，交由系统把 PWA
+  // 切到后台（最小化/切换应用本就会保活，内存中的填写内容不会丢）。
+  const modalStack = [];
+  let suppressPop = false; // 程序内关闭弹层时屏蔽由其 history.back 触发的 popstate
+  function isModalOpen(id) { return !$(id).classList.contains('hidden'); }
+  // 有未保存内容需确认时返回提示语，否则返回 null
+  function modalDirtyMsg(id) {
+    if (id === '#editor') {
+      const ta = $('#editor-body').querySelector('textarea');
+      if (ta && ta.value.trim()) return '框内有未保存的内容，退出将丢弃。';
+    }
+    if (id === '#recorder') {
+      if (($('#rec-result').value || '').trim()) return '录音转写/纪要尚未保存，退出将丢弃。';
+    }
+    return null;
+  }
+  function openModal(id) {
+    if (!isModalOpen(id)) {
+      modalStack.push(id);
+      history.pushState({ sparkModal: id }, '');
+    }
+    $(id).classList.remove('hidden');
+  }
+  function dismissModal(id, opts) {
+    opts = opts || {};
+    if (!opts.force) {
+      const dm = modalDirtyMsg(id);
+      if (dm && !confirm(dm + '确定丢弃？')) return false;
+    }
+    $(id).classList.add('hidden');
+    const i = modalStack.lastIndexOf(id);
+    if (i >= 0) modalStack.splice(i, 1);
+    if (!opts.fromBack) { suppressPop = true; history.back(); }
+    return true;
+  }
+  // 安卓物理返回键：关闭最上层弹层（有未保存内容先确认），不退出应用
+  window.addEventListener('popstate', () => {
+    if (suppressPop) { suppressPop = false; return; }
+    if (!modalStack.length) return; // 无弹层 → 系统后台保活，不拦截
+    const id = modalStack.pop();
+    const dm = modalDirtyMsg(id);
+    if (dm) {
+      // 有未保存内容：重新压回状态阻止退出，并询问是否丢弃
+      modalStack.push(id);
+      history.pushState({ sparkModal: id }, '');
+      if (confirm(dm + '确定丢弃？')) { modalStack.pop(); $(id).classList.add('hidden'); }
+      return;
+    }
+    $(id).classList.add('hidden');
+  });
+  // 点击弹层遮罩（卡片外区域）关闭弹层
+  document.querySelectorAll('.modal').forEach(m => {
+    m.addEventListener('click', e => { if (e.target === m) dismissModal('#' + m.id); });
+  });
+
   // ---------- 解锁 ----------
   async function doUnlock(pw, remember) {
     try {
@@ -119,7 +177,7 @@
     document.querySelectorAll('#set-model input').forEach(r => { r.checked = (r.value === s.summaryModel); });
     document.querySelectorAll('#set-engine input').forEach(r => { r.checked = (r.value === s.asrEngine); });
     renderSettingsCats();
-    $('#settings').classList.remove('hidden');
+    openModal('#settings');
   }
   function renderSettingsCats() {
     const box = $('#set-cats');
@@ -156,7 +214,7 @@
       if (store.addCategory(v)) { $('#set-new-cat').value = ''; renderSettingsCats(); renderCats(); sync(); }
       else toast('分类已存在或无效');
     };
-    $('#settings-close').onclick = () => $('#settings').classList.add('hidden');
+    $('#settings-close').onclick = () => dismissModal('#settings');
     $('#settings-btn').onclick = openSettings;
   }
 
@@ -280,7 +338,7 @@
     $('#reader-stamps').textContent =
       `创建 ${fmtDate(e.created)}${edited ? ' · 修改 ' + fmtDate(e.updated) : ''}`;
     $('#reader-body').innerHTML = html;
-    $('#reader').classList.remove('hidden');
+    openModal('#reader');
   }
 
   // ---------- 编辑/新增 弹层 ----------
@@ -357,7 +415,7 @@
     } else {
       $('#editor-stamps').textContent = '';
     }
-    $('#editor').classList.remove('hidden');
+    openModal('#editor');
     // 会议编辑器内嵌录音转写：选文件→上传→转写→填入正文
     const recGo = $('#f-rec-go');
     if (recGo) {
@@ -448,7 +506,7 @@
     if (!patch) return; // 校验失败已 toast 提示
     if (editingId) store.updateEntry(editingId, patch);
     else store.addEntry(patch);
-    $('#editor').classList.add('hidden');
+    dismissModal('#editor', { force: true });
     renderList(); renderCats();
     await sync();
   }
@@ -514,7 +572,7 @@
     exportFmt = 'md';
     $('#export-fmt').querySelectorAll('button').forEach(x => x.classList.toggle('on', x.dataset.f === 'md'));
     renderExport();
-    $('#textout').classList.remove('hidden');
+    openModal('#textout');
   }
   function copyExport() {
     const ta = $('#textout-area'); ta.select();
@@ -569,14 +627,14 @@
       return `<div class="ls-row"><span>#${esc(c)}</span><span class="amt-in">+¥${x.in.toFixed(2)}</span>` +
         `<span class="amt-out">-¥${x.out.toFixed(2)}</span><span class="muted">${x.n}笔</span></div>`;
     }).join('') || '<div class="muted small">暂无账本数据</div>';
-    $('#ledger-summary').classList.remove('hidden');
+    openModal('#ledger-summary');
   }
 
   // ---------- 录音转写（P5） ----------
   function openRecorder() {
     $('#rec-result').value = ''; $('#rec-summary').value = ''; $('#rec-title').value = '';
     $('#rec-save').disabled = true; $('#rec-status').textContent = '';
-    $('#recorder').classList.remove('hidden');
+    openModal('#recorder');
   }
   // 分片上传：把文件切成 ≤4MB 的片，逐片 POST 给 SCF（SCF 用 COS 分块上传合并）。
   // 单文件（<4MB）仍走一次性直传；仅大文件走分片，突破 API 网关 ~6MB 请求体上限。
@@ -711,7 +769,7 @@
     store.addEntry({ type: 'meeting', title: recTitle, meetingDate: new Date().toISOString().slice(0, 16).replace('T', ' '), body: text, summary: summary });
     await sync();
     toast('已保存为会议记录（原文+纪要）');
-    $('#recorder').classList.add('hidden');
+    dismissModal('#recorder', { force: true });
   }
 
   // ---------- 日报助手（P4 + 周报模式 P5） ----------
@@ -949,7 +1007,7 @@
     $('#daily-paste').value = ''; $('#daily-bg').value = ''; $('#daily-result').value = '';
     dailyLast = null;
     switchDailyTab('gen');
-    $('#daily').classList.remove('hidden');
+    openModal('#daily');
   }
   function switchDailyTab(tab) {
     $('#daily-tabs').querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.tab === tab));
@@ -976,6 +1034,9 @@
 
     $('#lock-btn').onclick = () => {
       store.clearSession(); store.lock();
+      // 清空弹层栈并隐藏所有弹层（弹层在 #app 之外，需单独处理）
+      modalStack.length = 0;
+      document.querySelectorAll('.modal').forEach(m => m.classList.add('hidden'));
       $('#app').classList.add('hidden'); $('#lock-screen').classList.remove('hidden');
       $('#password').value = '';
     };
@@ -983,21 +1044,16 @@
 
     $('#fab').onclick = () => openEditor(null);
     $('#editor-save').onclick = saveEditor;
-    $('#editor-close').onclick = () => $('#editor').classList.add('hidden');
-    $('#editor-exit').onclick = () => {
-      const ta = $('#editor-body').querySelector('textarea');
-      if (ta && ta.value.trim()) {
-        if (confirm('框内有内容，直接退出将丢弃。点「确定」丢弃，点「取消」返回保存。')) $('#editor').classList.add('hidden');
-      } else $('#editor').classList.add('hidden');
-    };
+    $('#editor-close').onclick = () => dismissModal('#editor');
+    $('#editor-exit').onclick = () => dismissModal('#editor');
     // 阅读弹层
-    $('#reader-close').onclick = () => { readingId = null; $('#reader').classList.add('hidden'); };
+    $('#reader-close').onclick = () => { readingId = null; dismissModal('#reader', { force: true }); };
     $('#reader-edit').onclick = () => {
-      if (readingId) { openEditor(readingId); $('#reader').classList.add('hidden'); }
+      if (readingId) { openEditor(readingId); dismissModal('#reader', { force: true }); }
     };
     $('#search').addEventListener('input', e => { cur.q = e.target.value.trim(); renderList(); });
 
-    $('#textout-close').onclick = () => $('#textout').classList.add('hidden');
+    $('#textout-close').onclick = () => dismissModal('#textout');
     $('#textout-copy').onclick = copyExport;
     $('#textout-download').onclick = downloadExport;
     $('#export-fmt').querySelectorAll('button').forEach(b => b.onclick = () => {
@@ -1008,9 +1064,9 @@
     });
     $('#export-btn').onclick = openExport;
     $('#summary-btn').onclick = openSummary;
-    $('#ls-close').onclick = () => $('#ledger-summary').classList.add('hidden');
+    $('#ls-close').onclick = () => dismissModal('#ledger-summary');
     $('#daily-btn').onclick = openDaily;
-    $('#daily-close').onclick = () => $('#daily').classList.add('hidden');
+    $('#daily-close').onclick = () => dismissModal('#daily');
     $('#daily-tabs').querySelectorAll('button').forEach(b => b.onclick = () => switchDailyTab(b.dataset.tab));
     $('#daily-mode').querySelectorAll('button').forEach(b => b.onclick = () => switchDailyMode(b.dataset.mode));
     $('#daily-date').onchange = renderDailyChecklist;
@@ -1018,7 +1074,7 @@
     $('#daily-end').onchange = renderDailyChecklist;
     $('#rec-btn').onclick = openRecorder;
     $('#rec-open-btn').onclick = openRecorder;
-    $('#rec-close').onclick = () => $('#recorder').classList.add('hidden');
+    $('#rec-close').onclick = () => dismissModal('#recorder');
     $('#rec-go').onclick = recTranscribe;
     $('#rec-sum').onclick = recSummarize;
     $('#rec-save').onclick = recSave;
@@ -1038,11 +1094,7 @@
         openEditor(null);
       }
       if (e.key === 'Escape') {
-        if (!$('#reader').classList.contains('hidden')) { readingId = null; $('#reader').classList.add('hidden'); }
-        else if (!$('#editor').classList.contains('hidden')) $('#editor').classList.add('hidden');
-        else if (!$('#ledger-summary').classList.contains('hidden')) $('#ledger-summary').classList.add('hidden');
-        else if (!$('#recorder').classList.contains('hidden')) $('#recorder').classList.add('hidden');
-        else if (!$('#daily').classList.contains('hidden')) $('#daily').classList.add('hidden');
+        if (modalStack.length) dismissModal(modalStack[modalStack.length - 1]);
       }
     });
   }
