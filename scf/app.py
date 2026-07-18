@@ -4,11 +4,11 @@ sparkbook — SCF Web 函数后端（纯 API 服务）
 
 职责：
   - /api/ai          调 DeepSeek 生成/进化日报与会议纪要（开启 prompt caching）
-  - /api/asr/presign 下发 COS 预签名 PUT URL，供浏览器直传 M4A（不暴露密钥）
+  - /api/asr/upload  接收浏览器上传的录音字节（支持分片），服务端用 COS 分块上传写入临时桶（中继，免 CORS/免直连）
   - /api/asr/transcribe 用腾讯云 ASR 对临时音频转写，返回文本并清理
   - /api/vault/save   接收浏览器加密信封（密文），服务端凭证写入 COS（中继，免 CORS）
   - /api/vault/load   服务端凭证从 COS 读回加密信封（中继，免 CORS）
-  - /api/vault/presign 仅 ASR 录音上传用（浏览器直传大文件仍需桶 CORS）
+  - /api/vault/presign 仅备用：下发 COS 预签名 URL（当前 vault 走中继，未用直传）
 
 零知识边界：SCF 永不接触笔记明文/主密码。它只代理 LLM 与 ASR，
 所有敏感数据在浏览器端加解密；vault 中继仅经手密文（vid + 加密信封）。
@@ -154,32 +154,145 @@ def asr_presign():
 # 受 API 网关请求体上限（约 6MB）限制，前端对大文件做分片或提示用户。
 @app.route('/api/asr/upload', methods=['POST', 'OPTIONS'])
 def asr_upload():
+    """录音上传（支持分片，突破 API 网关 ~6MB 请求体上限）。
+
+    模式：
+      - 单文件（前端判定为 1 片）：POST /api/asr/upload?ext=mp3  body=原始字节
+        → 直接 put_object，返回 {code:0, key}（transcribe 仍可用）。
+      - 分片：前端把文件切成 ≤4MB 的片，依次
+          POST /api/asr/upload?ext=mp3&sid=<会话>&part=<i>&total=<n>  body=该片字节
+        SCF 用 COS 分块上传逐片写入，状态存于 asr-tmp/<sid>/meta.json；全部片传完后：
+          POST /api/asr/upload?sid=<会话>&final=1  → 合并分块，返回最终 key。
+        失败清理：
+          POST /api/asr/upload?sid=<会话>&abort=1   → 中止分块上传并删除残留。
+    最终 key 仍以 asr-tmp/ 前缀，transcribe 可直接使用；转写后由 transcribe 清理。
+    """
     if request.method == 'OPTIONS':
         return ('', 204)
     if not authorized():
         return auth_fail()
     if not (COS_SECRET_ID and COS_SECRET_KEY and COS_BUCKET):
         return jsonify({'code': 2, 'msg': 'SCF 未配置 COS 环境变量'}), 500
-    data = request.get_data()  # 原始字节（fetch body 为 Blob/File 时）
+    ext = (request.args.get('ext') or 'm4a').lstrip('.')
+    sid = request.args.get('sid') or ''
+    is_final = request.args.get('final') == '1'
+    is_abort = request.args.get('abort') == '1'
+
+    if is_abort:
+        return _asr_abort(sid)
+    if is_final:
+        return _asr_finalize(sid)
+
+    # 读取请求体（原始字节；fetch body 为 Blob/File 时）
+    data = request.get_data()
     if not data:
         f = request.files.get('file')
         if f:
             data = f.read()
     if not data:
         return jsonify({'code': 2, 'msg': '空文件'}), 400
-    ext = (request.args.get('ext') or 'm4a').lstrip('.')
-    key = ASR_TEMP_PREFIX + uuid.uuid4().hex + '.' + ext
+
+    # 单文件直传（无 sid）
+    if not sid:
+        key = ASR_TEMP_PREFIX + uuid.uuid4().hex + '.' + ext
+        try:
+            _cos_put_raw(key, data)
+        except Exception as e:  # noqa: BLE001
+            return jsonify({'code': 3, 'msg': 'COS 写入失败: ' + str(e)}), 502
+        return jsonify({'code': 0, 'key': key})
+
+    # 分片上传
+    part = request.args.get('part')
+    if part is None:
+        return jsonify({'code': 2, 'msg': '分片请求缺少 part 参数'}), 400
     try:
-        _cos_put_raw(key, data)
+        key, part_no = _asr_upload_part(sid, ext, int(part), data)
     except Exception as e:  # noqa: BLE001
-        return jsonify({'code': 3, 'msg': 'COS 写入失败: ' + str(e)}), 502
-    return jsonify({'code': 0, 'key': key})
+        return jsonify({'code': 3, 'msg': '分片上传失败: ' + str(e)}), 502
+    return jsonify({'code': 0, 'part': part_no})
+
+
+def _asr_meta_key(sid):
+    return ASR_TEMP_PREFIX + sid + '/meta.json'
+
+
+def _asr_upload_part(sid, ext, part_idx, data):
+    """处理一个分片：发起/续用分块上传，upload_part，更新 meta。返回 (key, part_no)。"""
+    client = _cos_client()
+    meta_key = _asr_meta_key(sid)
+    meta = _cos_get_json(meta_key)
+    if not meta:
+        key = ASR_TEMP_PREFIX + sid + '/audio.' + ext
+        mpu = client.create_multipart_upload(
+            Bucket=COS_BUCKET, Key=key, ContentType='application/octet-stream')
+        meta = {'key': key, 'uploadId': mpu['UploadId'], 'parts': {}}
+        _cos_put_json(meta_key, meta)
+    part_no = part_idx + 1  # COS 分块序号从 1 开始
+    resp = client.upload_part(
+        Bucket=COS_BUCKET, Key=meta['key'], PartNumber=part_no,
+        UploadId=meta['uploadId'], Body=data)
+    meta['parts'][str(part_no)] = resp['ETag']
+    _cos_put_json(meta_key, meta)
+    return meta['key'], part_no
+
+
+def _asr_finalize(sid):
+    client = _cos_client()
+    meta_key = _asr_meta_key(sid)
+    meta = _cos_get_json(meta_key)
+    if not meta or not meta.get('uploadId'):
+        return jsonify({'code': 2, 'msg': '未找到分片会话或已失效'}), 400
+    try:
+        parts = [{'PartNumber': int(p), 'ETag': meta['parts'][str(p)]}
+                 for p in sorted(meta['parts'].keys(), key=lambda x: int(x))]
+        client.complete_multipart_upload(
+            Bucket=COS_BUCKET, Key=meta['key'], UploadId=meta['uploadId'],
+            MultipartUpload={'Parts': parts})
+    except Exception as e:  # noqa: BLE001
+        return jsonify({'code': 3, 'msg': '合并分片失败: ' + str(e)}), 502
+    try:
+        client.delete_object(Bucket=COS_BUCKET, Key=meta_key)
+    except Exception:  # noqa: BLE001
+        pass
+    return jsonify({'code': 0, 'key': meta['key']})
+
+
+def _asr_abort(sid):
+    client = _cos_client()
+    meta_key = _asr_meta_key(sid)
+    meta = _cos_get_json(meta_key)
+    if meta and meta.get('uploadId'):
+        try:
+            client.abort_multipart_upload(
+                Bucket=COS_BUCKET, Key=meta['key'], UploadId=meta['uploadId'])
+        except Exception:  # noqa: BLE001
+            pass
+    try:
+        client.delete_object(Bucket=COS_BUCKET, Key=meta_key)
+    except Exception:  # noqa: BLE001
+        pass
+    return jsonify({'code': 0, 'msg': 'aborted'})
 
 
 def _cos_put_raw(key, body):
     client = _cos_client()
     client.put_object(Bucket=COS_BUCKET, Key=key.lstrip('/'),
                       Body=body, ContentType='application/octet-stream')
+
+
+def _cos_get_json(key):
+    try:
+        raw = _cos_get(key)
+        return json.loads(raw.decode('utf-8'))
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _cos_put_json(key, obj):
+    client = _cos_client()
+    client.put_object(Bucket=COS_BUCKET, Key=key.lstrip('/'),
+                      Body=json.dumps(obj).encode('utf-8'),
+                      ContentType='application/json')
 
 
 # ------------------------- 加密库（vault）预签名 -------------------------

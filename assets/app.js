@@ -298,10 +298,9 @@
       recGo.onclick = async () => {
         const file = $('#f-rec-file').files[0];
         if (!file) { toast('请先选择录音文件'); return; }
-        if (file.size > 5 * 1024 * 1024) { toast('音频建议小于 5MB（短录音）；更长录音暂不支持'); $('#f-rec-status').textContent = ''; return; }
         $('#f-rec-status').textContent = '上传中…';
         try {
-          const key = await uploadAudio(file);
+          const key = await uploadAudio(file, (p, stage) => { $('#f-rec-status').textContent = '云端' + stage + '…'; });
           $('#f-rec-status').textContent = '云端转写中（可能需1-2分钟）…';
           const res = await transcribeAudio(key);
           const raw = (res.text || '').trim();
@@ -502,17 +501,53 @@
     $('#rec-result').value = ''; $('#rec-summary').value = ''; $('#rec-save').disabled = true; $('#rec-status').textContent = '';
     $('#recorder').classList.remove('hidden');
   }
-  // 中继上传：前端把音频 POST 给 SCF，SCF 用服务端密钥写 COS（免浏览器直连 CORS 痛点）
-  // 受 API 网关请求体上限（约 6MB）限制，超过则提示用更短录音。
-  async function uploadAudio(file) {
+  // 分片上传：把文件切成 ≤4MB 的片，逐片 POST 给 SCF（SCF 用 COS 分块上传合并）。
+  // 单文件（<4MB）仍走一次性直传；仅大文件走分片，突破 API 网关 ~6MB 请求体上限。
+  // onProgress(percent, stage) 用于回传进度（stage 如「上传中 (3/10)」「合并中」）。
+  async function uploadAudio(file, onProgress) {
+    const CHUNK = 4 * 1024 * 1024; // 4MB，留足余量低于 API 网关 ~6MB 上限
     const ext = (file.name.split('.').pop() || 'm4a').toLowerCase();
-    const r = await fetch(API_BASE + '/api/asr/upload?ext=' + encodeURIComponent(ext), {
-      method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: file,
-    });
-    if (!r.ok) throw new Error('上传 HTTP ' + r.status);
-    const d = await r.json().catch(() => ({}));
-    if (d.code !== 0) throw new Error(d.msg || ('code ' + d.code));
-    return d.key;
+    const total = Math.max(1, Math.ceil(file.size / CHUNK));
+    const report = (p, stage) => { if (onProgress) onProgress(p, stage); };
+    if (total === 1) {
+      report(10, '上传中');
+      const r = await fetch(API_BASE + '/api/asr/upload?ext=' + encodeURIComponent(ext), {
+        method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: file,
+      });
+      if (!r.ok) throw new Error('上传 HTTP ' + r.status);
+      const d = await r.json().catch(() => ({}));
+      if (d.code !== 0) throw new Error(d.msg || ('code ' + d.code));
+      report(100, '完成');
+      return d.key;
+    }
+    const sid = Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+    try {
+      for (let i = 0; i < total; i++) {
+        report(Math.round((i / total) * 90), '上传中 (' + (i + 1) + '/' + total + ')');
+        const blob = file.slice(i * CHUNK, (i + 1) * CHUNK);
+        const r = await fetch(API_BASE + '/api/asr/upload?ext=' + encodeURIComponent(ext)
+          + '&sid=' + encodeURIComponent(sid) + '&part=' + i + '&total=' + total, {
+          method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: blob,
+        });
+        if (!r.ok) throw new Error('分片 ' + (i + 1) + ' 上传 HTTP ' + r.status);
+        const d = await r.json().catch(() => ({}));
+        if (d.code !== 0) throw new Error(d.msg || ('code ' + d.code));
+      }
+      report(95, '合并中');
+      const rf = await fetch(API_BASE + '/api/asr/upload?sid=' + encodeURIComponent(sid) + '&final=1', {
+        method: 'POST',
+      });
+      const df = await rf.json().catch(() => ({}));
+      if (df.code !== 0) throw new Error(df.msg || ('code ' + df.code));
+      report(100, '完成');
+      return df.key;
+    } catch (e) {
+      // 失败清理：中止分块上传，避免 COS 残留孤儿分片
+      try {
+        await fetch(API_BASE + '/api/asr/upload?sid=' + encodeURIComponent(sid) + '&abort=1', { method: 'POST' });
+      } catch (_) { /* 忽略清理错误 */ }
+      throw e;
+    }
   }
   // 把单框内容拆成：转写原文（非#行） + 用户#标注（context）
   function splitTranscript(val) {
@@ -547,10 +582,9 @@
   async function recTranscribe() {
     const file = $('#rec-file').files[0];
     if (!file) { toast('请先选择录音文件'); return; }
-    if (file.size > 5 * 1024 * 1024) { toast('音频建议小于 5MB（短录音）；更长录音暂不支持'); $('#rec-status').textContent = ''; return; }
     $('#rec-status').textContent = '上传中…';
     try {
-      const key = await uploadAudio(file);
+      const key = await uploadAudio(file, (p, stage) => { $('#rec-status').textContent = '云端' + stage + '…'; });
       $('#rec-status').textContent = '云端转写中（可能需1-2分钟）…';
       const res = await transcribeAudio(key);
       const raw = (res.text || '').trim();
