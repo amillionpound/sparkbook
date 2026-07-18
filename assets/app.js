@@ -142,6 +142,11 @@
     if (e.type === 'meeting') {
       return esc(e.title) + (e.meetingDate ? ` · ${esc(e.meetingDate)}` : '');
     }
+    if (e.type === 'worklog') {
+      const t = esc(e.title || '');
+      const b = esc(e.body || '');
+      return (t + (t && b ? ' · ' : '') + b) || '（空）';
+    }
     return esc(e.body || e.title || '');
   }
   function renderList() {
@@ -229,6 +234,9 @@
         }
       }
       if (e.body) html += `<div class="field"><label>备注</label><p>${esc(e.body)}</p></div>`;
+    } else if (e.type === 'worklog') {
+      if (e.title) html += `<div class="field"><label>标题</label><p>${esc(e.title)}</p></div>`;
+      if (e.body) html += `<div class="field"><label>内容</label><pre class="reader-text">${esc(e.body)}</pre></div>`;
     } else if (e.type === 'inspiration') {
       html += `<div class="field"><label>灵感内容</label><pre class="reader-text">${esc(e.body)}</pre></div>`;
       if (e.capturedAt) html += `<div class="field"><label>捕获时刻</label><p>${fmtDate(e.capturedAt)}</p></div>`;
@@ -247,8 +255,8 @@
   function field(label, html) { return `<div class="field"><label>${label}</label>${html}</div>`; }
   function formHtml(type, e) {
     e = e || {};
-    // 会议类型新建时默认分类=工作（日报核心分类），其余类型默认未分类；二者均可手动改
-    const defCat = (type === 'meeting' && !e.category) ? '工作' : e.category;
+    // 会议 / 工作流水 新建时默认分类=工作（日报核心分类），其余类型默认未分类；二者均可手动改
+    const defCat = (type === 'meeting' || type === 'worklog') && !e.category ? '工作' : e.category;
     const catOpts = ['<option value="">（未分类）</option>']
       .concat(store.categories().map(c => `<option value="${esc(c)}" ${defCat === c ? 'selected' : ''}>${esc(c)}</option>`));
     let h = `<div class="field"><label>类型</label><select id="f-type">` +
@@ -289,6 +297,9 @@
       h += field('备注', `<input id="f-body" value="${esc(e.body || '')}" />`);
     } else if (type === 'inspiration') {
       h += field('灵感内容', `<textarea id="f-body">${esc(e.body || '')}</textarea>`);
+    } else if (type === 'worklog') {
+      h += field('标题（可空）', `<input id="f-title" value="${esc(e.title || '')}" placeholder="一句话概括，如：与厂商确认 OB 迁移方案" />`);
+      h += field('内容', `<textarea id="f-body">${esc(e.body || '')}</textarea>`);
     } else { // misc
       h += field('内容', `<textarea id="f-body">${esc(e.body || '')}</textarea>`);
     }
@@ -393,6 +404,8 @@
       patch.created = dt.toISOString();
     } else if (type === 'inspiration') {
       if (!editingId) patch.capturedAt = new Date().toISOString();
+    } else if (type === 'worklog') {
+      patch.title = ($('#f-title').value || '').trim();
     }
     return patch;
   }
@@ -410,7 +423,7 @@
   async function convertFlow(id) {
     const e = store.get(id);
     if (!e) return;
-    const target = prompt('转为哪种类型？输入：misc / task / ledger / meeting', 'misc');
+    const target = prompt('转为哪种类型？输入：misc / task / ledger / meeting / worklog', 'misc');
     if (!target || !TYPE_ORDER.includes(target)) return;
     const extra = {};
     if (target === 'task') extra.dueDate = prompt('截止时间（可空，格式 YYYY-MM-DD 或 YYYY-MM-DD HH:mm）', '') || '';

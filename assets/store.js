@@ -13,9 +13,10 @@
     task: { label: '任务', icon: '✅', hasTitle: true },
     ledger: { label: '账本', icon: '💰', hasTitle: false },
     meeting: { label: '会议', icon: '📅', hasTitle: true },
+    worklog: { label: '工作流水', icon: '🗒️', hasTitle: true },
     inspiration: { label: '灵感', icon: '💡', hasTitle: false },
   };
-  const TYPE_ORDER = ['misc', 'task', 'ledger', 'meeting', 'inspiration'];
+  const TYPE_ORDER = ['misc', 'task', 'ledger', 'meeting', 'worklog', 'inspiration'];
 
   function uid() {
     return 'e' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
