@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#1f2937" />
   <title>Sparkbook · 灵感簿</title>
   <link rel="manifest" href="manifest.webmanifest" />
-  <link rel="stylesheet" href="assets/styles.css?v=20260718e" />
+  <link rel="stylesheet" href="assets/styles.css?v=20260718i" />
 </head>
 <body>
   <!-- 解锁页 -->
@@ -266,6 +266,12 @@
           </div>
           <div id="set-cats" class="set-cats"></div>
         </div>
+        <div class="field">
+          <label>需求登记册 <span class="muted small">（自动从日报挖掘）</span></label>
+          <p class="muted small">系统从你生成的日报中自动抽取需求/项目引用（含 XQ 编号、年月代号如 202606、项目简称、潜在需求描述），用于日报中自动展开需求全称。可手动改全称或删除，也可重新全量挖掘。</p>
+          <button id="set-mine-all" class="btn btn-ghost">🔄 重新挖掘全部历史日报</button>
+          <div id="set-reqs" class="set-reqs"></div>
+        </div>
       </div>
     </div>
   </div>
@@ -275,7 +281,7 @@
 
   <script src="assets/crypto.js?v=20260717m"></script>
   <script src="assets/store.js?v=20260717m"></script>
-  <script src="assets/app.js?v=20260718h"></script>
+  <script src="assets/app.js?v=20260718i"></script>
   <script>
     if ('serviceWorker' in navigator) {
       window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));

@@ -20,6 +20,7 @@ import os
 import sys
 import time
 import json
+import re
 import hmac
 import hashlib
 import uuid
@@ -122,6 +123,86 @@ def api_ai():
     if err:
         return jsonify({'code': 3, 'msg': err}), 502
     return jsonify({'code': 0, 'text': text, 'model': model})
+
+
+# ------------------------- 需求挖掘（扫历史日报，抽取需求登记册） -------------------------
+MINING_SYSTEM = (
+    '你是需求情报抽取器。下面是若干篇「工作日报」的正文，每篇带有日期。'
+    '请从这些日报中抽取被提及的「需求 / 项目 / 专项工作」引用，建立需求登记册。\n'
+    '抽取规则：\n'
+    '1. 识别一切需求迹象：我行的正式需求编号（形如 XQ 后接一串数字，如 XQ202606001）、'
+    '年月数字代号（如 202606 表示 2026年6月需求）、项目/系统简称（如「反洗钱2.0」「AI质检」「对公集市批量对账」）、'
+    '以及尚无正式编号和名称的「潜在需求描述」（如「近期业务提到的对公客户画像优化」）。\n'
+    '2. 同一需求在不同日报中可能写法不同（如先写「经营平台202606需求」，后写「202606」），'
+    '请归并为同一条，name 取「首次出现的、最长的、最完整的写法」作为全称。\n'
+    '3. stage（当前所处阶段）从下列标准阶段列表中选择最贴近的：'
+    '潜在需求、需求讨论、需求确认、需求分析、议价、立项、开发、测试、投产、验证、运维/故障。\n'
+    '4. firstSeen / lastSeen 取该需求在所给日报中最早 / 最晚出现的日期（YYYY-MM-DD）。\n'
+    '5. 若某需求无正式编号，code 填空字符串；note 可写「潜在需求，待立项编号」。\n'
+    '只输出一个 JSON 数组，不要任何解释。元素格式：\n'
+    '{"code":"XQ202606001 或 空串","name":"完整需求/项目名称","stage":"标准阶段之一",'
+    '"firstSeen":"YYYY-MM-DD","lastSeen":"YYYY-MM-DD","note":""}\n'
+    '若某篇日报未提及任何需求，不要为它产出元素。\n'
+)
+
+
+@app.route('/api/mine', methods=['POST', 'OPTIONS'])
+def api_mine():
+    if request.method == 'OPTIONS':
+        return ('', 204)
+    if not authorized():
+        return auth_fail()
+    d = request.get_json(force=True, silent=True) or {}
+    texts = d.get('texts') or []
+    if not isinstance(texts, list) or not texts:
+        return jsonify({'code': 2, 'msg': '缺少 texts'}), 400
+    # 组装带日期标注的语料
+    buf = []
+    for t in texts[:50]:  # 单次最多 50 篇，防超长
+        date = (t.get('date') or '')[:10]
+        body = (t.get('body') or '').strip()
+        if body:
+            buf.append(f'【日报日期 {date}】\n{body}')
+    corpus = '\n\n'.join(buf)
+    if not corpus.strip():
+        return jsonify({'code': 0, 'requirements': []})
+    messages = [
+        {'role': 'system', 'content': MINING_SYSTEM},
+        {'role': 'user', 'content': corpus},
+    ]
+    text, err = call_deepseek(messages, model='deepseek-chat', max_tokens=2000, temperature=0.2, use_cache=False)
+    if err:
+        return jsonify({'code': 3, 'msg': err}), 502
+    reqs = _parse_requirements_json(text)
+    return jsonify({'code': 0, 'requirements': reqs})
+
+
+def _parse_requirements_json(text):
+    if not text:
+        return []
+    try:
+        m = re.search(r'\[[\s\S]*\]', text)
+        if not m:
+            return []
+        arr = json.loads(m.group(0))
+        out = []
+        for x in arr:
+            if not isinstance(x, dict):
+                continue
+            name = str(x.get('name') or '').strip()
+            if not name and not str(x.get('code') or '').strip():
+                continue
+            out.append({
+                'code': str(x.get('code') or '').strip(),
+                'name': name,
+                'stage': str(x.get('stage') or '未知').strip(),
+                'firstSeen': str(x.get('firstSeen') or '').strip()[:10],
+                'lastSeen': str(x.get('lastSeen') or '').strip()[:10],
+                'note': str(x.get('note') or '').strip(),
+            })
+        return out
+    except Exception:  # noqa: BLE001
+        return []
 
 
 # ------------------------- COS 预签名（官方 SDK，签名最稳妥） -------------------------

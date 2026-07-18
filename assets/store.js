@@ -15,8 +15,10 @@
     meeting: { label: '会议', icon: '📅', hasTitle: true },
     worklog: { label: '工作流水', icon: '🗒️', hasTitle: true },
     inspiration: { label: '灵感', icon: '💡', hasTitle: false },
+    // 日报类型：UI 不显示分类选择（内部塞「工作」以贴合 isDailySource 数据结构），且不参与日报生成（防自喂）
+    daily: { label: '日报', icon: '📰', hasTitle: true, hideCategory: true },
   };
-  const TYPE_ORDER = ['misc', 'task', 'ledger', 'meeting', 'worklog', 'inspiration'];
+  const TYPE_ORDER = ['misc', 'task', 'ledger', 'meeting', 'worklog', 'inspiration', 'daily'];
 
   function uid() {
     return 'e' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
@@ -117,6 +119,7 @@
         categories: ['生活', '工作', '项目', '随手'],
         styleProfile: { terms: [], rules: [], samples: [] },
         settings: { summaryModel: 'chat', asrEngine: 'standard' },
+        requirements: [], // 需求登记册：[{code,name,stage,firstSeen,lastSeen,note}]
       };
     }
 
@@ -230,6 +233,49 @@
     saveSettings(patch) {
       const cur = this.settings();
       this.state.settings = Object.assign(cur, patch || {});
+    }
+
+    // ---- 需求登记册（随库加密同步） ----
+    requirements() { return Array.isArray(this.state.requirements) ? this.state.requirements.slice() : []; }
+    // 合并挖掘结果：按 code（优先）或 name 归一去重，保留最长名称、最新阶段、最早/最近出现日
+    mergeRequirements(incoming) {
+      const cur = this.requirements();
+      const byKey = new Map();
+      const keyOf = r => (r.code && String(r.code).trim()) ? ('C:' + r.code.trim())
+        : ('N:' + String(r.name || '').trim());
+      // 现有库先入表
+      cur.forEach(r => { const k = keyOf(r); byKey.set(k, Object.assign({}, r)); });
+      // 合并新结果
+      (incoming || []).forEach(r => {
+        if (!r || !(r.code || r.name)) return;
+        const k = keyOf(r);
+        const old = byKey.get(k);
+        if (!old) {
+          byKey.set(k, {
+            code: (r.code || '').trim(),
+            name: (r.name || '').trim(),
+            stage: r.stage || '未知',
+            firstSeen: r.firstSeen || '',
+            lastSeen: r.lastSeen || '',
+            note: r.note || '',
+          });
+        } else {
+          if ((r.name || '').length > (old.name || '').length) old.name = r.name.trim();
+          if (r.code && !old.code) old.code = r.code.trim();
+          if (r.stage && r.stage !== '未知') old.stage = r.stage;
+          if (r.firstSeen && (!old.firstSeen || r.firstSeen < old.firstSeen)) old.firstSeen = r.firstSeen;
+          if (r.lastSeen && (!old.lastSeen || r.lastSeen > old.lastSeen)) { old.lastSeen = r.lastSeen; if (r.stage) old.stage = r.stage; }
+          if (r.note) old.note = (old.note ? old.note + '；' : '') + r.note;
+        }
+      });
+      this.state.requirements = [...byKey.values()];
+    }
+    saveRequirements(arr) { this.state.requirements = arr || []; }
+    removeRequirement(key) {
+      const code = (key || '').startsWith('C:') ? key.slice(2) : '';
+      const name = (key || '').startsWith('N:') ? key.slice(2) : '';
+      this.state.requirements = this.requirements().filter(r =>
+        !(code && r.code === code) && !(name && r.name === name));
     }
 
     // ---- 查询 ----

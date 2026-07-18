@@ -179,3 +179,13 @@ body {
 .set-cat-name { font-size: 14px; }
 .mini-btn.danger { color: #e5484d; border-color: #f3c2c4; background: #fff5f5; }
 .mini-btn.danger:hover { background: #ffe9e9; }
+
+/* 需求登记册 */
+.set-reqs { margin-top: 10px; display: flex; flex-direction: column; gap: 8px; }
+.req-row { border: 1px solid var(--line, #e3e3e8); border-radius: 8px; padding: 8px 10px; background: #fafafb; }
+.req-main { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.req-name { font-weight: 600; font-size: 14px; }
+.req-code { font-size: 12px; color: #555; background: #eef0f3; border-radius: 6px; padding: 1px 6px; font-family: ui-monospace, monospace; }
+.req-stage { font-size: 12px; color: #1a7f37; background: #e8f6ec; border-radius: 6px; padding: 1px 6px; }
+.req-meta { font-size: 12px; color: #888; margin: 4px 0 6px; }
+.req-actions { display: flex; gap: 6px; }

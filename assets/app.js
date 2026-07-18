@@ -177,6 +177,7 @@
     document.querySelectorAll('#set-model input').forEach(r => { r.checked = (r.value === s.summaryModel); });
     document.querySelectorAll('#set-engine input').forEach(r => { r.checked = (r.value === s.asrEngine); });
     renderSettingsCats();
+    renderSettingsRequirements();
     openModal('#settings');
   }
   function renderSettingsCats() {
@@ -216,6 +217,55 @@
     };
     $('#settings-close').onclick = () => dismissModal('#settings');
     $('#settings-btn').onclick = openSettings;
+    $('#set-mine-all').onclick = () => {
+      if (confirm('将重新扫描全部历史日报并抽取需求（可能消耗少量 API 额度），继续？')) mineAllRequirements();
+    };
+  }
+  function renderSettingsRequirements() {
+    const box = $('#set-reqs');
+    if (!box) return;
+    const reqs = store.requirements();
+    if (!reqs.length) {
+      box.innerHTML = '<div class="muted small">还没有挖掘到需求。生成日报后会自动积累；或点上方「重新挖掘全部历史日报」。</div>';
+      return;
+    }
+    const keyOf = r => (r.code && r.code.trim()) ? ('C:' + r.code.trim()) : ('N:' + r.name.trim());
+    box.innerHTML = reqs.map(r => {
+      const k = keyOf(r);
+      const code = (r.code || '').trim();
+      const name = (r.name || '').trim() || '（未命名）';
+      return `<div class="req-row">
+        <div class="req-main">
+          <span class="req-name">${esc(name)}</span>
+          ${code ? `<span class="req-code">${esc(code)}</span>` : ''}
+          <span class="req-stage">${esc(r.stage || '未知')}</span>
+        </div>
+        <div class="req-meta">首见 ${esc(r.firstSeen || '—')} · 最近 ${esc(r.lastSeen || '—')}</div>
+        <div class="req-actions">
+          <button class="mini-btn" data-editreq="${esc(k)}">✎ 改全称</button>
+          <button class="mini-btn danger" data-delreq="${esc(k)}">删除</button>
+        </div>
+      </div>`;
+    }).join('');
+    box.querySelectorAll('[data-editreq]').forEach(b => b.onclick = () => {
+      const k = b.dataset.editreq;
+      const isCode = k.startsWith('C:');
+      const cur = isCode
+        ? (store.requirements().find(r => r.code === k.slice(2)) || {}).name
+        : (store.requirements().find(r => r.name === k.slice(2)) || {}).name;
+      const nv = prompt('修改需求全称：', cur || '');
+      if (nv && nv.trim()) {
+        const list = store.requirements();
+        list.forEach(r => {
+          const rk = (r.code && r.code.trim()) ? ('C:' + r.code.trim()) : ('N:' + r.name.trim());
+          if (rk === k) r.name = nv.trim();
+        });
+        store.saveRequirements(list); sync(); renderSettingsRequirements();
+      }
+    });
+    box.querySelectorAll('[data-delreq]').forEach(b => b.onclick = () => {
+      if (confirm('删除该需求登记项？')) { store.removeRequirement(b.dataset.delreq); sync(); renderSettingsRequirements(); }
+    });
   }
 
   // ---------- 列表 ----------
@@ -237,6 +287,10 @@
       const b = esc(e.body || '');
       return (t + (t && b ? ' · ' : '') + b) || '（空）';
     }
+    if (e.type === 'daily') {
+      const t = esc(e.title || '');
+      return (t ? t + ' · ' : '') + esc((e.body || '').slice(0, 60));
+    }
     return esc(e.body || e.title || '');
   }
   function renderList() {
@@ -251,7 +305,7 @@
     }
     list.innerHTML = items.map(e => {
       const edited = e.updated && e.created && e.updated > e.created;
-      const catHtml = e.category ? `<span class="entry-cat">#${esc(e.category)}</span>` : '';
+      const catHtml = (e.category && e.type !== 'daily') ? `<span class="entry-cat">#${esc(e.category)}</span>` : '';
       const editedHtml = edited ? `<span class="entry-edited">已编辑</span>` : '';
       let actions = `<div class="entry-actions">
         <button class="mini-btn" data-edit="${e.id}">✏️</button>
@@ -327,6 +381,9 @@
     } else if (e.type === 'worklog') {
       if (e.title) html += `<div class="field"><label>标题</label><p>${esc(e.title)}</p></div>`;
       if (e.body) html += `<div class="field"><label>内容</label><pre class="reader-text">${esc(e.body)}</pre></div>`;
+    } else if (e.type === 'daily') {
+      if (e.title) html += `<div class="field"><label>日期 / 标题</label><p>${esc(e.title)}</p></div>`;
+      if (e.body) html += `<div class="field"><label>日报内容</label><pre class="reader-text">${esc(e.body)}</pre></div>`;
     } else if (e.type === 'inspiration') {
       html += `<div class="field"><label>灵感内容</label><pre class="reader-text">${esc(e.body)}</pre></div>`;
       if (e.capturedAt) html += `<div class="field"><label>捕获时刻</label><p>${fmtDate(e.capturedAt)}</p></div>`;
@@ -352,7 +409,7 @@
     let h = `<div class="field"><label>类型</label><select id="f-type">` +
       TYPE_ORDER.map(k => `<option value="${k}" ${type === k ? 'selected' : ''}>${TYPES[k].icon} ${TYPES[k].label}</option>`).join('') +
       `</select></div>`;
-    h += field('分类', `<select id="f-cat">${catOpts.join('')}</select>`);
+    if (type !== 'daily') h += field('分类', `<select id="f-cat">${catOpts.join('')}</select>`);
     if (type === 'task') {
       h += field('标题', `<input id="f-title" value="${esc(e.title || '')}" />`);
       h += field('截止时间', `<input id="f-due" placeholder="YYYY-MM-DD HH:mm" value="${esc(e.dueDate || defaultDateTime())}" />`);
@@ -390,6 +447,9 @@
     } else if (type === 'worklog') {
       h += field('标题（可空）', `<input id="f-title" value="${esc(e.title || '')}" placeholder="一句话概括，如：与厂商确认 OB 迁移方案" />`);
       h += field('内容', `<textarea id="f-body">${esc(e.body || '')}</textarea>`);
+    } else if (type === 'daily') {
+      h += field('日期 / 标题（可改）', `<input id="f-title" value="${esc(e.title || '')}" placeholder="如 2026-07-18" />`);
+      h += field('日报内容', `<textarea id="f-body">${esc(e.body || '')}</textarea>`);
     } else { // misc
       h += field('内容', `<textarea id="f-body">${esc(e.body || '')}</textarea>`);
     }
@@ -498,14 +558,23 @@
       if (!editingId) patch.capturedAt = new Date().toISOString();
     } else if (type === 'worklog') {
       patch.title = ($('#f-title').value || '').trim();
+    } else if (type === 'daily') {
+      patch.title = ($('#f-title').value || '').trim();
+      patch.category = '工作'; // 日报内部隐藏分类，统一归类工作以贴合数据结构
     }
     return patch;
   }
   async function saveEditor() {
     const patch = collectForm();
     if (!patch) return; // 校验失败已 toast 提示
-    if (editingId) store.updateEntry(editingId, patch);
-    else store.addEntry(patch);
+    if (editingId) {
+      store.updateEntry(editingId, patch);
+      // 编辑历史日报后，增量重挖该篇需求（正文变化可能新增/补全需求）
+      const e = store.get(editingId);
+      if (e && e.type === 'daily' && e.body && e.body.trim()) {
+        await mineRequirements([{ id: e.id, date: (e.title || '').slice(0, 10), body: e.body }]);
+      }
+    } else store.addEntry(patch);
     dismissModal('#editor', { force: true });
     renderList(); renderCats();
     await sync();
@@ -839,8 +908,9 @@
     const sun = new Date(mon); sun.setDate(mon.getDate() + 6);
     return [fmtYMD(mon), fmtYMD(sun)];
   }
-  // 日报只采纳：会议 + 分类为"工作"的条目
+  // 日报只采纳：会议 + 分类为"工作"的条目；日报类型本身不参与生成（防自喂循环）
   function isDailySource(e) {
+    if (e.type === 'daily') return false;
     if (e.type === 'meeting') return true;
     return e.category === '工作';
   }
@@ -895,14 +965,79 @@
     const bg = ($('#daily-bg').value || '').trim();
     const user = `请基于以下 ${dateStr} 的素材生成当日精简日报。\n\n【素材】\n${material}` +
       (bg ? `\n\n【补充背景 / 要求】\n${bg}` : '') +
+      buildRequirementContext(material) +
       `\n\n要求：全文可复制、无特殊格式、段落间不留空行、每篇2-4点、聚焦进度/风险/资源/验收；如有会议素材必须包含「参加：标题」。`;
     const text = await callAI('generate', [{ role: 'system', content: sys }, { role: 'user', content: user }]);
     if (text != null) {
       $('#daily-result').value = text;
       dailyLast = { generated: text, date: dateStr, material };
-      toast('已生成');
+      // 存入「日报」类型条目（历史库），并增量挖掘需求登记册
+      const dailyDate = dailyMode === 'week'
+        ? ($('#daily-start').value || dateStr.split(' ~ ')[0].trim())
+        : $('#daily-date').value;
+      const de = store.addEntry({ type: 'daily', title: dateStr, body: text, category: '工作', created: toISOMid(dailyDate) });
+      await mineRequirements([{ id: de.id, date: dailyDate, body: text }]);
+      renderList(); renderCats();
+      toast('已生成并存入日报');
     }
   }
+  // 需求登记册：从素材中匹配已登记需求，注入生成 prompt（LLM 用全称书写）
+  function buildRequirementContext(material) {
+    const reqs = store.requirements();
+    if (!reqs.length || !material) return '';
+    const lines = [];
+    reqs.forEach(r => {
+      const code = (r.code || '').trim();
+      const name = (r.name || '').trim();
+      if (!name && !code) return;
+      const hit = (code && material.includes(code)) || (name && material.includes(name));
+      if (hit) {
+        const full = code ? `${code} = ${name}` : name;
+        lines.push(`- ${full}（阶段：${r.stage || '未知'}，首见 ${r.firstSeen || '—'}，最近 ${r.lastSeen || '—'}）`);
+      }
+    });
+    if (!lines.length) return '';
+    return '\n\n【需求登记册上下文（素材中提及的下列需求，请一律使用其完整名称书写，不要只写代号）】\n' + lines.join('\n');
+  }
+  // 把 YYYY-MM-DD 转 ISO（失败回退当前时刻）
+  function toISOMid(dateStr) {
+    const s = (dateStr || '').trim();
+    if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
+      const dt = new Date(s + 'T12:00:00');
+      if (!isNaN(dt)) return dt.toISOString();
+    }
+    return new Date().toISOString();
+  }
+  // 调 SCF 挖掘需求并合并进登记册
+  async function mineRequirements(texts) {
+    try {
+      const r = await fetch(API_BASE + '/api/mine', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ texts }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (d.code !== 0) return;
+      const reqs = d.requirements || [];
+      if (reqs.length) {
+        store.mergeRequirements(reqs);
+        await sync();
+      }
+    } catch (e) { /* 挖掘失败不影响主流程 */ }
+  }
+  // 全量重新挖掘历史日报（设置页触发）
+  async function mineAllRequirements() {
+    const dailies = store.list().filter(e => e.type === 'daily' && e.body && e.body.trim());
+    if (!dailies.length) { toast('暂无历史日报可挖掘'); return; }
+    for (let i = 0; i < dailies.length; i += 15) {
+      const batch = dailies.slice(i, i + 15).map(e => ({
+        id: e.id, date: (e.title || e.created || '').slice(0, 10), body: e.body,
+      }));
+      await mineRequirements(batch);
+    }
+    toast('已重新挖掘全部历史日报（' + dailies.length + ' 篇）');
+    renderSettingsRequirements();
+  }
+
   function dailyCopy() {
     const t = $('#daily-result').value;
     if (!t.trim()) { toast('没有可复制的内容'); return; }
