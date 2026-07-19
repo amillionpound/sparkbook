@@ -80,6 +80,10 @@
     return null;
   }
   function openModal(id) {
+    // 打开弹层时自动收起侧栏（避免遮罩层叠干扰）
+    const sb = $('#sidebar'), ov = $('#sidebar-overlay');
+    if (sb) sb.classList.remove('open');
+    if (ov) ov.classList.add('hidden');
     if (!isModalOpen(id)) {
       modalStack.push(id);
       history.pushState({ sparkModal: id }, '');
@@ -187,8 +191,8 @@
     box.innerHTML = cats.map(c =>
       `<div class="set-cat-row">
         <span class="set-cat-name">${esc(c)}</span>
-        ${c === '工作' ? '<span class="muted small">日报核心分类 · 不可删</span>'
-          : `<button class="mini-btn danger" data-delcat="${esc(c)}">删除</button>`}
+        ${c === '工作' ? '<span class="set-cat-hint">日报核心 · 不可删</span>'
+          : `<button class="set-del-btn" data-delcat="${esc(c)}">删除</button>`}
       </div>`
     ).join('');
     box.querySelectorAll('[data-delcat]').forEach(b => b.onclick = () => {
@@ -243,7 +247,7 @@
         <div class="req-meta">首见 ${esc(r.firstSeen || '—')} · 最近 ${esc(r.lastSeen || '—')}</div>
         <div class="req-actions">
           <button class="mini-btn" data-editreq="${esc(k)}">✎ 改全称</button>
-          <button class="mini-btn danger" data-delreq="${esc(k)}">删除</button>
+          <button class="set-del-btn" data-delreq="${esc(k)}">删除</button>
         </div>
       </div>`;
     }).join('');
@@ -453,20 +457,19 @@
       h += field('日报日期（仅当天）', `<input id="f-daily-date" type="date" value="${esc(dInit)}" />`);
       h += field('标题（可改，默认=日期）', `<input id="f-title" value="${esc(e.title || '')}" placeholder="${today}" />`);
       h += `<div class="field"><label>合并当天记录（会议 + 工作流水）</label>
-        <div class="daily-row">
+        <div class="daily-row daily-actions">
           <button type="button" id="f-daily-rec" class="btn btn-ghost">🎙 录音转写</button>
-          <button type="button" id="f-daily-selall" class="mini-btn">全选</button>
-          <button type="button" id="f-daily-selnone" class="mini-btn">清空</button>
+          <button type="button" id="f-daily-selall" class="daily-mini">全选</button>
+          <button type="button" id="f-daily-selnone" class="daily-mini">清空</button>
           <span id="f-daily-selcount" class="muted small"></span>
         </div>
         <div id="f-daily-checklist" class="daily-checklist"></div></div>`;
-      h += field('追加素材（粘贴流水账 / 自由记录，与勾选项合并）', `<textarea id="f-daily-paste" class="sp-area" placeholder="可粘贴当天其他流水账或自由补充，将并入生成素材"></textarea>`);
+      h += field('追加素材（粘贴流水账 / 自由补充，与勾选项合并）', `<textarea id="f-daily-paste" class="sp-area" placeholder="可粘贴当天其他流水账或自由补充，将并入生成素材"></textarea>`);
       h += field('补充背景（本篇临时，不保存、不进入风格进化）', `<textarea id="f-daily-bg" class="sp-area" placeholder="如：今天重点向 VP 汇报进度；语气偏正式"></textarea>`);
-      h += `<div class="daily-row">
+      h += `<div class="daily-row daily-gen-row">
         <button type="button" id="f-daily-gen" class="btn btn-primary">生成日报</button>
-        <button type="button" id="f-daily-revise" class="btn btn-primary">修改（采纳 + 进化）</button>
+        <button type="button" id="f-daily-revise" class="btn btn-primary">进化风格</button>
         <button type="button" id="f-daily-copy" class="btn">复制</button>
-        <span class="muted small">生成 → 编辑正文 → 点「保存」落库</span>
       </div>`;
       h += field('日报内容', `<textarea id="f-body">${esc(e.body || '')}</textarea>`);
     } else { // misc
@@ -1181,7 +1184,12 @@
       $('#app').classList.add('hidden'); $('#lock-screen').classList.remove('hidden');
       $('#password').value = '';
     };
-    $('#menu-toggle').onclick = () => $('#sidebar').classList.toggle('open');
+    const sb = $('#sidebar');
+    const ov = $('#sidebar-overlay');
+    const closeSb = () => { sb.classList.remove('open'); ov.classList.add('hidden'); };
+    const openSb = () => { sb.classList.add('open'); ov.classList.remove('hidden'); };
+    $('#menu-toggle').onclick = () => { if (sb.classList.contains('open')) closeSb(); else openSb(); };
+    if (ov) ov.onclick = closeSb;
 
     $('#fab').onclick = () => openEditor(null);
     $('#editor-save').onclick = saveEditor;

@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#1f2937" />
   <title>Sparkbook · 灵感簿</title>
   <link rel="manifest" href="manifest.webmanifest" />
-  <link rel="stylesheet" href="assets/styles.css?v=20260718k" />
+  <link rel="stylesheet" href="assets/styles.css?v=20260718l" />
 </head>
 <body>
   <!-- 解锁页 -->
@@ -52,6 +52,8 @@
           <button id="rec-open-btn" class="link-btn">🎙 录音转写</button>
         </div>
       </aside>
+      <!-- 侧栏遮罩（点击关闭侧栏） -->
+      <div id="sidebar-overlay" class="sidebar-overlay hidden"></div>
 
       <!-- 主区 -->
       <main class="main">
@@ -176,18 +178,18 @@
         <div class="field">
           <label>会议总结模型</label>
           <div id="set-model" class="set-opts">
-            <label class="set-opt"><input type="radio" name="sm" value="chat" /> deepseek-chat（快 · 省）</label>
-            <label class="set-opt"><input type="radio" name="sm" value="reasoner" /> deepseek-reasoner（更准 · 更慢 · 约 3-4 倍成本）</label>
+            <label class="set-opt"><input type="radio" name="sm" value="chat" /> <span class="set-opt-label-text">deepseek-chat（快 · 省）</span></label>
+            <label class="set-opt"><input type="radio" name="sm" value="reasoner" /> <span class="set-opt-label-text">deepseek-reasoner（更准 · 更慢 · 约 3-4 倍成本）</span></label>
           </div>
-          <p class="muted small">reasoner 为推理模型，纪要更准更细，但更慢且更贵。可按会议重要程度随时切换。</p>
+          <p class="muted small">推理模型纪要更准更细，但更慢且更贵。按会议重要程度随时切换。</p>
         </div>
         <div class="field">
           <label>语音转写引擎（优先）</label>
           <div id="set-engine" class="set-opts">
-            <label class="set-opt"><input type="radio" name="se" value="standard" /> 标准版（精度最高）</label>
-            <label class="set-opt"><input type="radio" name="se" value="flash" /> 极速版（精度略降 · ≤2h/100MB）</label>
+            <label class="set-opt"><input type="radio" name="se" value="standard" /> <span class="set-opt-label-text">标准版（精度最高）</span></label>
+            <label class="set-opt"><input type="radio" name="se" value="flash" /> <span class="set-opt-label-text">极速版（精度略降 · ≤2h/100MB）</span></label>
           </div>
-          <p class="muted small">主引擎免费额度耗尽或超限时，会自动回退到另一引擎（极速版仅兜 ≤2h 录音）。此设置只决定"优先用哪个"。</p>
+          <p class="muted small">优先引擎额度耗尽或超限时，自动回退另一引擎。此设置仅决定优先用哪个。</p>
         </div>
         <div class="field">
           <label>分类管理</label>
@@ -199,13 +201,13 @@
         </div>
         <div class="field">
           <label>需求登记册 <span class="muted small">（自动从日报挖掘）</span></label>
-          <p class="muted small">系统从你生成的日报中自动抽取需求/项目引用（含 XQ 编号、年月代号如 202606、项目简称、潜在需求描述），用于日报中自动展开需求全称。可手动改全称或删除，也可重新全量挖掘。</p>
+          <p class="muted small">从日报自动抽取需求/项目引用（XQ编号、代号、简称），日报中自动展开全称。可手动改或删除，也可重新挖掘。</p>
           <button id="set-mine-all" class="btn btn-ghost">🔄 重新挖掘全部历史日报</button>
           <div id="set-reqs" class="set-reqs"></div>
         </div>
         <div class="field set-sp-block">
           <label>日报风格档案 <span class="muted small">（随库加密同步）</span></label>
-          <p class="muted small">AI 写日报的偏好记忆（术语表 / 风格要点 / 对照样例）。由「修改（采纳+进化）」自动进化，也可手动编辑。基底为内置种子人设，无需修改。</p>
+          <p class="muted small">AI 写日报的偏好记忆（术语 / 风格 / 样例），由「修改」自动进化，也可手动编辑。</p>
           <div class="field"><label>术语表（遇到这些词请保留 / 优先使用，每行一个）</label><textarea id="sp-terms" class="sp-area"></textarea></div>
           <div class="field"><label>风格要点（措辞、结构、详略，每行一条）</label><textarea id="sp-rules" class="sp-area"></textarea></div>
           <div class="field"><label>对照样例（初稿一行 / 终稿一行，空行分隔多组）</label><textarea id="sp-samples" class="sp-area"></textarea></div>
@@ -220,7 +222,7 @@
 
   <script src="assets/crypto.js?v=20260717m"></script>
   <script src="assets/store.js?v=20260717m"></script>
-  <script src="assets/app.js?v=20260718k"></script>
+  <script src="assets/app.js?v=20260718l"></script>
   <script>
     if ('serviceWorker' in navigator) {
       window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
