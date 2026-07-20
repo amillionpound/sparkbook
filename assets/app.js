@@ -562,7 +562,8 @@
   }
   function collectForm() {
     const type = $('#f-type').value;
-    const cat = $('#f-cat').value;
+    const catEl = $('#f-cat');
+    const cat = catEl ? catEl.value : (type === 'daily' ? '工作' : '');
     const body = $('#f-body') ? $('#f-body').value : '';
     const patch = { type, category: cat, body };
     if (type === 'task') {
@@ -611,15 +612,24 @@
     if (!patch) return; // 校验失败已 toast 提示
     if (editingId) {
       store.updateEntry(editingId, patch);
-      // 编辑历史日报后，增量重挖该篇需求（正文变化可能新增/补全需求）
-      const e = store.get(editingId);
+    } else {
+      store.addEntry(patch);
+    }
+    // 先关弹窗并刷新列表，确保本地已落库且立即可见
+    dismissModal('#editor', { force: true });
+    renderList(); renderCats();
+    // 编辑历史日报后增量重挖该篇需求（网络异常不阻断保存）
+    try {
+      const e = editingId ? store.get(editingId) : null;
       if (e && e.type === 'daily' && e.body && e.body.trim()) {
         await mineRequirements([{ id: e.id, date: (e.title || '').slice(0, 10), body: e.body }]);
       }
-    } else store.addEntry(patch);
-    dismissModal('#editor', { force: true });
-    renderList(); renderCats();
-    await sync();
+    } catch (err) { console.warn('需求挖掘失败（不影响保存）', err); }
+    try {
+      await sync();
+    } catch (err) {
+      toast('已保存到本地，但云端同步失败：' + (err.message || err));
+    }
   }
 
   // ---------- 灵感转普通记录 ----------
