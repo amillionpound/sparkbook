@@ -117,8 +117,9 @@
     }
     $(id).classList.add('hidden');
   });
-  // 点击弹层遮罩（卡片外区域）关闭弹层
+  // 点击弹层遮罩（卡片外区域）关闭弹层（编辑器除外——避免误触丢失未保存内容）
   document.querySelectorAll('.modal').forEach(m => {
+    if (m.id === 'editor') return; // 编辑器只能通过「退出」/「保存」/✕ 关闭
     m.addEventListener('click', e => { if (e.target === m) dismissModal('#' + m.id); });
   });
 
@@ -456,6 +457,8 @@
       const dInit = (e && e.title && /^\d{4}-\d{2}-\d{2}$/.test(e.title)) ? e.title : today;
       h += field('日报日期（仅当天）', `<input id="f-daily-date" type="date" value="${esc(dInit)}" />`);
       h += field('标题（可改，默认=日期）', `<input id="f-title" value="${esc(e.title || '')}" placeholder="${today}" />`);
+      h += field('追加素材（粘贴流水账 / 自由补充，与勾选项合并）', `<textarea id="f-daily-paste" class="sp-area" placeholder="可粘贴当天其他流水账或自由补充，将并入生成素材"></textarea>`);
+      h += field('补充背景（本篇临时，不保存、不进入风格进化）', `<textarea id="f-daily-bg" class="sp-area" placeholder="如：今天重点向 VP 汇报进度；语气偏正式"></textarea>`);
       h += `<div class="field"><label>合并当天记录（会议 + 工作流水）</label>
         <div class="daily-row daily-actions">
           <button type="button" id="f-daily-rec" class="btn btn-ghost">🎙 录音转写</button>
@@ -464,8 +467,6 @@
           <span id="f-daily-selcount" class="muted small"></span>
         </div>
         <div id="f-daily-checklist" class="daily-checklist"></div></div>`;
-      h += field('追加素材（粘贴流水账 / 自由补充，与勾选项合并）', `<textarea id="f-daily-paste" class="sp-area" placeholder="可粘贴当天其他流水账或自由补充，将并入生成素材"></textarea>`);
-      h += field('补充背景（本篇临时，不保存、不进入风格进化）', `<textarea id="f-daily-bg" class="sp-area" placeholder="如：今天重点向 VP 汇报进度；语气偏正式"></textarea>`);
       h += `<div class="daily-row daily-gen-row">
         <button type="button" id="f-daily-gen" class="btn btn-primary">生成日报</button>
         <button type="button" id="f-daily-revise" class="btn btn-primary">进化风格</button>
