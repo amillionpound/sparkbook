@@ -112,15 +112,16 @@
       // 有未保存内容：重新压回状态阻止退出，并询问是否丢弃
       modalStack.push(id);
       history.pushState({ sparkModal: id }, '');
-      if (confirm(dm + '确定丢弃？')) { modalStack.pop(); $(id).classList.add('hidden'); }
+      if (confirm(dm + '确定丢弃？')) { modalStack.pop(); if (id === '#recorder') asrOnRecorderClose(); $(id).classList.add('hidden'); }
       return;
     }
+    if (id === '#recorder') asrOnRecorderClose();
     $(id).classList.add('hidden');
   });
   // 点击弹层遮罩（卡片外区域）关闭弹层（编辑器除外——避免误触丢失未保存内容）
   document.querySelectorAll('.modal').forEach(m => {
     if (m.id === 'editor') return; // 编辑器只能通过「退出」/「保存」/✕ 关闭
-    m.addEventListener('click', e => { if (e.target === m) dismissModal('#' + m.id); });
+    m.addEventListener('click', e => { if (e.target === m) { if (m.id === 'recorder') asrOnRecorderClose(); dismissModal('#' + m.id); } });
   });
 
   // ---------- 解锁 ----------
@@ -424,10 +425,11 @@
       h += field('标题', `<input id="f-title" value="${esc(e.title || '')}" />`);
       h += field('会议时间', `<input id="f-mdate" placeholder="YYYY-MM-DD HH:mm" value="${esc(e.meetingDate || defaultDateTime())}" />`);
       h += field('录音转写', `<div class="rec-inline">
-        <input id="f-rec-file" type="file" accept="audio/*,.mp3,.m4a,.wav,.flac,.ogg,.amr" />
+        <input id="f-rec-file" type="file" accept=".mp3,.m4a,.wav,.flac,.ogg,.amr" />
         <button type="button" id="f-rec-go" class="btn btn-ghost">🎙 转写并填入</button>
         <span id="f-rec-status" class="muted small"></span>
       </div>
+      <div id="f-rec-resume" class="asr-resume hidden"></div>
       <p class="muted small">转写后原文填入下方「转写原文」，用#行写你的补充/修正，再点「汇总总结」生成纪要。</p>`);
       h += field('转写原文 / 正文', `<textarea id="f-body">${esc(e.body || '')}</textarea>`);
       h += field('AI 纪要（可编辑）', `<div class="rec-inline">
@@ -502,6 +504,7 @@
     // 会议编辑器内嵌录音转写：选文件→上传→转写→填入正文
     const recGo = $('#f-rec-go');
     if (recGo) {
+      asrRefreshResume('editor');
       recGo.onclick = async () => {
         const file = $('#f-rec-file').files[0];
         if (!file) { toast('请先选择录音文件'); return; }
@@ -514,6 +517,8 @@
           const ta = $('#f-body');
           ta.value = (ta.value ? ta.value + '\n\n' : '') + (raw ? raw + '\n\n# ' : '# ');
           $('#f-rec-status').textContent = '已填入原文，可编辑';
+          asrClearSession(); // 内容已进编辑器正文，无需再续传
+          asrRefreshResume('editor');
           toast('已填入转写原文，补充后点「汇总总结」');
         } catch (e) { $('#f-rec-status').textContent = ''; toast('转写失败：' + (e.message || e)); }
       };
@@ -754,56 +759,200 @@
 
   // ---------- 录音转写（P5） ----------
   function openRecorder() {
-    $('#rec-result').value = ''; $('#rec-summary').value = ''; $('#rec-title').value = '';
-    $('#rec-save').disabled = true; $('#rec-status').textContent = '';
+    const s = asrLoadSession();
+    if (s && (s.transcript || s.summary)) {
+      asrRestoreRecorder();
+    } else {
+      $('#rec-result').value = ''; $('#rec-summary').value = '';
+      if ($('#rec-title')) $('#rec-title').value = '';
+      $('#rec-save').disabled = true; $('#rec-status').textContent = '';
+    }
+    asrRefreshResume('recorder');
     openModal('#recorder');
   }
-  // 分片上传：把文件切成 ≤4MB 的片，逐片 POST 给 SCF（SCF 用 COS 分块上传合并）。
-  // 单文件（<4MB）仍走一次性直传；仅大文件走分片，突破 API 网关 ~6MB 请求体上限。
-  // onProgress(percent, stage) 用于回传进度（stage 如「上传中 (3/10)」「合并中」）。
+  // ============ 录音上传：断点续传 + 会话持久化 ============
+  // 设计要点：
+  //  - 后端分片会话状态存于 COS asr-tmp/<sid>/meta.json，已传分片天然持久（SCF 无状态也安全）。
+  //  - 前端把断点（sid/completed/key/file信息/ext/total）写入 localStorage，关闭/刷新后仍能续传。
+  //  - 失败不再 abort（保护已传分片），仅保存断点；用户可在「放弃」里显式清理。
+  //  - 未完成时锁定文件：只允许选「同一文件」（name+size+lastModified 匹配）继续，杜绝换文件。
+  const ASR_EXTS = ['mp3', 'm4a', 'wav', 'flac', 'ogg', 'amr'];
+  const ASR_SESSION_KEY = 'sparkbook.asrSession.v1';
+  let _asrCancel = false;   // 关闭弹层时置位，让上传循环在下一分片后优雅停止（断点已存）
+  let _asrActive = false;
+
+  function asrLoadSession() {
+    try { return JSON.parse(localStorage.getItem(ASR_SESSION_KEY)) || null; } catch (e) { return null; }
+  }
+  function asrSaveSession(s) {
+    if (s) localStorage.setItem(ASR_SESSION_KEY, JSON.stringify(s));
+    else localStorage.removeItem(ASR_SESSION_KEY);
+  }
+  function asrClearSession() { localStorage.removeItem(ASR_SESSION_KEY); _asrActive = false; }
+  function asrFileMeta(f) { return { name: f.name, size: f.size, lastModified: f.lastModified }; }
+  function asrFileMatches(f, m) {
+    return !!m && f.name === m.name && f.size === m.size && f.lastModified === m.lastModified;
+  }
+  function asrExtOk(f) {
+    const e = (f.name.split('.').pop() || '').toLowerCase();
+    return ASR_EXTS.includes(e);
+  }
+  function asrPct(s) { return Math.round((s.completed.length / Math.max(1, s.total)) * 100); }
+
+  // 单次上传（含续传）：file 已通过扩展名与锁定校验。返回最终 COS key。
   async function uploadAudio(file, onProgress) {
+    if (!asrExtOk(file)) {
+      throw new Error('不支持的文件格式，仅支持 ' + ASR_EXTS.join('/'));
+    }
     const CHUNK = 4 * 1024 * 1024; // 4MB，留足余量低于 API 网关 ~6MB 上限
     const ext = (file.name.split('.').pop() || 'm4a').toLowerCase();
     const total = Math.max(1, Math.ceil(file.size / CHUNK));
     const report = (p, stage) => { if (onProgress) onProgress(p, stage); };
-    if (total === 1) {
-      report(10, '上传中');
-      const r = await fetch(API_BASE + '/api/asr/upload?ext=' + encodeURIComponent(ext), {
-        method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: file,
-      });
-      if (!r.ok) throw new Error('上传 HTTP ' + r.status);
-      const d = await r.json().catch(() => ({}));
-      if (d.code !== 0) throw new Error(d.msg || ('code ' + d.code));
-      report(100, '完成');
-      return d.key;
+
+    // 解析会话：续传 or 新建
+    let s = asrLoadSession();
+    if (s && s.stage !== 'done') {
+      if (asrFileMatches(file, s.file)) {
+        // 续传：与 COS 权威分片对账，防本地状态丢失但 COS 会话仍在
+        try {
+          const st = await fetch(API_BASE + '/api/asr/upload?sid=' + encodeURIComponent(s.sid) + '&status=1');
+          const sd = await st.json().catch(() => ({}));
+          if (sd && sd.code === 0 && sd.hasMeta) {
+            const cosParts = (sd.parts || []).map(p => p - 1); // COS 分块序号从 1 起
+            const set = new Set([...s.completed, ...cosParts]);
+            s.completed = [...set].filter(i => i >= 0 && i < total).sort((a, b) => a - b);
+            asrSaveSession(s);
+          }
+        } catch (_) { /* 对账失败则用本地断点继续 */ }
+      } else {
+        throw new Error('已有未完成录音《' + s.file.name + '》' + asrPct(s) +
+          '% 已传，请选同一文件继续，或点「放弃」');
+      }
+    } else {
+      s = {
+        sid: Date.now().toString(36) + Math.random().toString(36).slice(2, 8),
+        ext, file: asrFileMeta(file), total, completed: [], key: null,
+        stage: 'uploading', transcript: '', summary: '', title: '', updatedAt: Date.now(),
+      };
     }
-    const sid = Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+    s.ext = ext; s.total = total; s.file = asrFileMeta(file); s.stage = 'uploading'; s.updatedAt = Date.now();
+    asrSaveSession(s); _asrActive = true; _asrCancel = false;
+
+    // 已 finalize 拿到 key（含续传时已上传完成的会话）：直接复用，不重传、不再 finalize
+    if (s.key) { report(100, '完成'); return s.key; }
+
     try {
-      for (let i = 0; i < total; i++) {
+      if (total === 1) {
+        // 单文件直传（<4MB）；若已 finalize 拿到 key 则直接复用，不重传
+        if (s.key) { report(100, '完成'); return s.key; }
+        report(10, '上传中');
+        const r = await fetch(API_BASE + '/api/asr/upload?ext=' + encodeURIComponent(ext), {
+          method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: file,
+        });
+        if (!r.ok) throw new Error('上传 HTTP ' + r.status);
+        const d = await r.json().catch(() => ({}));
+        if (d.code !== 0) throw new Error(d.msg || ('code ' + d.code));
+        s.key = d.key; s.completed = [0]; s.stage = 'uploaded'; asrSaveSession(s);
+        report(100, '完成'); return d.key;
+      }
+      // 分片续传：从断点（已传片数）继续
+      const start = s.completed.length;
+      for (let i = start; i < total; i++) {
+        if (_asrCancel) throw new Error('已取消');
         report(Math.round((i / total) * 90), '上传中 (' + (i + 1) + '/' + total + ')');
         const blob = file.slice(i * CHUNK, (i + 1) * CHUNK);
         const r = await fetch(API_BASE + '/api/asr/upload?ext=' + encodeURIComponent(ext)
-          + '&sid=' + encodeURIComponent(sid) + '&part=' + i + '&total=' + total, {
+          + '&sid=' + encodeURIComponent(s.sid) + '&part=' + i + '&total=' + total, {
           method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: blob,
         });
         if (!r.ok) throw new Error('分片 ' + (i + 1) + ' 上传 HTTP ' + r.status);
         const d = await r.json().catch(() => ({}));
         if (d.code !== 0) throw new Error(d.msg || ('code ' + d.code));
+        s.completed.push(i); asrSaveSession(s); // 每片断点落盘
       }
       report(95, '合并中');
-      const rf = await fetch(API_BASE + '/api/asr/upload?sid=' + encodeURIComponent(sid) + '&final=1', {
+      const rf = await fetch(API_BASE + '/api/asr/upload?sid=' + encodeURIComponent(s.sid) + '&final=1', {
         method: 'POST',
       });
       const df = await rf.json().catch(() => ({}));
       if (df.code !== 0) throw new Error(df.msg || ('code ' + df.code));
-      report(100, '完成');
-      return df.key;
+      s.key = df.key; s.stage = 'uploaded'; asrSaveSession(s);
+      report(100, '完成'); return df.key;
     } catch (e) {
-      // 失败清理：中止分块上传，避免 COS 残留孤儿分片
-      try {
-        await fetch(API_BASE + '/api/asr/upload?sid=' + encodeURIComponent(sid) + '&abort=1', { method: 'POST' });
-      } catch (_) { /* 忽略清理错误 */ }
+      // 保护已传分片：不 abort，保留断点供续传
+      s.stage = 'uploading'; asrSaveSession(s);
       throw e;
+    } finally {
+      _asrActive = false;
+    }
+  }
+
+  // 放弃未完成上传：中止 COS 分块 + 清本地会话 + 复位文件输入
+  async function asrDiscard() {
+    const s = asrLoadSession();
+    if (s && s.sid) {
+      try { await fetch(API_BASE + '/api/asr/upload?sid=' + encodeURIComponent(s.sid) + '&abort=1', { method: 'POST' }); }
+      catch (_) { /* 忽略 */ }
+    }
+    asrClearSession();
+    const rf = $('#rec-file'); if (rf) rf.value = '';
+    const ff = $('#f-rec-file'); if (ff) ff.value = '';
+    asrRefreshResume('recorder'); asrRefreshResume('editor');
+    toast('已放弃未完成的上传');
+  }
+
+  // 续传横幅：有未完成会话时提示进度 + 重选同一文件 + 放弃
+  function asrRefreshResume(surface) {
+    const banner = (surface === 'recorder') ? $('#rec-resume') : $('#f-rec-resume');
+    if (!banner) return;
+    const s = asrLoadSession();
+    if (!s || s.stage === 'done') { banner.classList.add('hidden'); banner.innerHTML = ''; return; }
+    const verb = (s.stage === 'uploaded') ? '已上传完成（可直接转写）' : ('已上传 ' + asrPct(s) + '%');
+    banner.classList.remove('hidden');
+    banner.innerHTML = '📌 检测到未完成录音《' + esc(s.file.name) + '》' + verb +
+      '。请重新选择<b>同一文件</b>后点「开始转写 / 转写并填入」继续' +
+      '；或 <button type="button" class="asr-discard link-btn">放弃</button>';
+    const disc = banner.querySelector('.asr-discard');
+    if (disc) disc.onclick = asrDiscard;
+  }
+
+  // 文件输入变更：扩展名校验 + 未完成时锁定（只允许同一文件）
+  function asrBindFileInput(inputId) {
+    const inp = $('#' + inputId);
+    if (!inp) return;
+    inp.addEventListener('change', () => {
+      const f = inp.files[0];
+      if (!f) return;
+      if (!asrExtOk(f)) { toast('不支持的格式，仅支持 ' + ASR_EXTS.join('/')); inp.value = ''; return; }
+      const s = asrLoadSession();
+      if (s && s.stage !== 'done' && !asrFileMatches(f, s.file)) {
+        toast('已有未完成录音《' + s.file.name + '》' + asrPct(s) + '%，请选同一文件继续，或点「放弃」');
+        inp.value = ''; return; // 锁定：不允许换文件
+      }
+    });
+  }
+
+  // 关闭录音弹层：暂存已填字段 + 保存断点 + 优雅取消上传循环
+  function asrOnRecorderClose() {
+    const s = asrLoadSession();
+    if (s && s.stage !== 'done') {
+      s.transcript = $('#rec-result').value || '';
+      s.summary = $('#rec-summary').value || '';
+      s.title = ($('#rec-title') ? $('#rec-title').value : '') || '';
+      // 注意：stage 不降级（uploaded 保持 uploaded），仅保存暂存字段与断点（不 abort）
+      asrSaveSession(s);
+    }
+    _asrCancel = true; // 让进行中的分片循环在下一分片后停（断点已存）
+  }
+  // 打开录音弹层：若有暂存字段则恢复
+  function asrRestoreRecorder() {
+    const s = asrLoadSession();
+    if (s && (s.transcript || s.summary)) {
+      $('#rec-result').value = s.transcript || '';
+      $('#rec-summary').value = s.summary || '';
+      if ($('#rec-title')) $('#rec-title').value = s.title || '';
+      $('#rec-save').disabled = !((s.transcript || '').trim());
+      $('#rec-status').textContent = '已恢复上次未保存的转写 / 纪要';
     }
   }
   // 把单框内容拆成：转写原文（非#行） + 用户#标注（context）
@@ -891,6 +1040,7 @@
     store.addEntry({ type: 'meeting', title: recTitle, meetingDate: new Date().toISOString().slice(0, 16).replace('T', ' '), body: text, summary: summary });
     await sync();
     toast('已保存为会议记录（原文+纪要）');
+    asrClearSession(); // 保存成功后会话使命结束，清掉断点/暂存
     dismissModal('#recorder', { force: true });
     // 若日报编辑器正打开，刷新当天勾选清单（承接录音转写→自动进日报素材）
     const ed = $('#editor');
@@ -1227,8 +1377,10 @@
     $('#ls-close').onclick = () => dismissModal('#ledger-summary');
     // 录音转写（独立弹层，仍由底部「🎙 录音转写」按钮唤起；日报编辑器内也有同名按钮唤起同一弹层）
     $('#rec-open-btn').onclick = openRecorder;
-    $('#rec-close').onclick = () => dismissModal('#recorder');
+    $('#rec-close').onclick = () => { asrOnRecorderClose(); dismissModal('#recorder'); };
     $('#rec-go').onclick = recTranscribe;
+    asrBindFileInput('rec-file');
+    asrBindFileInput('f-rec-file');
     $('#rec-sum').onclick = recSummarize;
     $('#rec-save').onclick = recSave;
     // 日报类型编辑器内的按钮在 openEditor 内动态绑定（每次打开重新渲染）

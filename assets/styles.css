@@ -48,6 +48,11 @@ body {
 .link-btn { border: none; background: transparent; color: var(--primary); cursor: pointer; font-size: 13px; }
 .rec-inline { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .rec-inline input[type=file] { flex: 1; min-width: 160px; }
+/* 录音断点续传横幅 */
+.asr-resume { margin: 2px 0 10px; padding: 9px 11px; border: 1px dashed var(--primary); background: #f6f8ff;
+  border-radius: 10px; font-size: 13px; color: var(--ink); line-height: 1.6; }
+.asr-resume b { color: var(--primary); }
+.asr-discard { margin-left: 4px; color: #e5484d; font-weight: 600; }
 
 /* 顶栏 */
 .topbar { display: flex; align-items: center; gap: 10px; padding: 12px 16px; background: var(--panel);

@@ -235,7 +235,7 @@ def asr_presign():
 # ------------------------- 录音中继上传（免浏览器直连 COS 的 CORS 痛点） -------------------------
 # 前端把音频二进制 POST 到本端点，SCF 用服务端密钥写入 asr-tmp/，返回 key。
 # 受 API 网关请求体上限（约 6MB）限制，前端对大文件做分片或提示用户。
-@app.route('/api/asr/upload', methods=['POST', 'OPTIONS'])
+@app.route('/api/asr/upload', methods=['POST', 'OPTIONS', 'GET'])
 def asr_upload():
     """录音上传（支持分片，突破 API 网关 ~6MB 请求体上限）。
 
@@ -248,12 +248,24 @@ def asr_upload():
           POST /api/asr/upload?sid=<会话>&final=1  → 合并分块，返回最终 key。
         失败清理：
           POST /api/asr/upload?sid=<会话>&abort=1   → 中止分块上传并删除残留。
+      - 状态查询（断点续传用）：GET /api/asr/upload?sid=<会话>&status=1
+        → 返回 {code:0, hasMeta, parts:[分块序号(从1起)], key}；前端据此与本地断点对齐。
     最终 key 仍以 asr-tmp/ 前缀，transcribe 可直接使用；转写后由 transcribe 清理。
     """
     if request.method == 'OPTIONS':
         return ('', 204)
     if not authorized():
         return auth_fail()
+    if request.method == 'GET':
+        # 断点续传：返回 COS 侧已存在的分块，前端据此跳过重传
+        sid = request.args.get('sid') or ''
+        if not sid:
+            return jsonify({'code': 2, 'msg': '缺少 sid'}), 400
+        meta = _cos_get_json(_asr_meta_key(sid))
+        if not meta:
+            return jsonify({'code': 0, 'hasMeta': False, 'parts': [], 'key': None})
+        parts = sorted(int(p) for p in meta.get('parts', {}).keys())
+        return jsonify({'code': 0, 'hasMeta': True, 'parts': parts, 'key': meta.get('key')})
     if not (COS_SECRET_ID and COS_SECRET_KEY and COS_BUCKET):
         return jsonify({'code': 2, 'msg': 'SCF 未配置 COS 环境变量'}), 500
     ext = (request.args.get('ext') or 'm4a').lstrip('.')
