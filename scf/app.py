@@ -758,6 +758,7 @@ def summarize_meeting(raw_text, terms=None, context=None, profile=None, model='d
         return '', err
     return (text or '').strip(), None
 
+@app.route('/api/asr/transcribe', methods=['POST', 'OPTIONS'])
 def asr_transcribe_route():
     if request.method == 'OPTIONS':
         return ('', 204)
