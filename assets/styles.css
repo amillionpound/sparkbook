@@ -54,6 +54,20 @@ body {
 .asr-resume b { color: var(--primary); }
 .asr-discard { margin-left: 4px; color: #e5484d; font-weight: 600; }
 
+/* 面聊实时字幕 + 说话人打标 */
+.face-live { min-height: 200px; max-height: 260px; overflow: auto; white-space: pre-wrap; font-size: 13px;
+  line-height: 1.65; background: #fafbfe; }
+.face-line { padding: 2px 0; }
+.face-line b { color: var(--primary); margin-right: 2px; }
+.face-pending { opacity: .5; }
+.face-tags { margin: 8px 0; padding: 10px 12px; border: 1px dashed var(--line); border-radius: 10px; background: #fbfcff; }
+.face-tags-label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 8px; }
+.face-tags-row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.face-tag { display: inline-flex; align-items: center; gap: 5px; font-size: 13px; color: var(--ink); }
+.face-tag-input { width: 86px; padding: 5px 8px; border: 1px solid var(--line); border-radius: 8px; font-size: 13px;
+  outline: none; font-family: inherit; }
+.face-tag-input:focus { border-color: var(--primary); }
+
 /* 顶栏 */
 .topbar { display: flex; align-items: center; gap: 10px; padding: 12px 16px; background: var(--panel);
   border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 5; }

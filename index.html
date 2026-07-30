@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#1f2937" />
   <title>Sparkbook · 灵感簿</title>
   <link rel="manifest" href="manifest.webmanifest" />
-  <link rel="stylesheet" href="assets/styles.css?v=20260728a" />
+  <link rel="stylesheet" href="assets/styles.css?v=20260730a" />
 </head>
 <body>
   <!-- 解锁页 -->
@@ -50,6 +50,8 @@
           <button id="export-btn" class="link-btn">导出</button>
           <button id="summary-btn" class="link-btn">汇总</button>
           <button id="rec-open-btn" class="link-btn">🎙 录音转写</button>
+          <button id="face-open-btn" class="link-btn">💬 面聊</button>
+          <button id="vm-open-btn" class="link-btn">🎤 语音速记</button>
         </div>
       </aside>
       <!-- 侧栏遮罩（点击关闭侧栏） -->
@@ -171,6 +173,76 @@
     </div>
   </div>
 
+  <!-- 面聊：实时多人转写 弹层 -->
+  <div id="facechat" class="modal hidden">
+    <div class="modal-card wide">
+      <div class="modal-head"><h3>💬 面聊（实时多人转写）</h3><button id="face-close" class="icon-btn">✕</button></div>
+      <div class="modal-body">
+        <p class="muted small">实时识别 + 说话人分离（腾讯云实时语音识别）。点「开始」后边说边出字幕；结束点「停止」。可给每位说话人打标（甲→张三），本次及后续同圈子面聊自动沿用。同一圈子共用一个声纹上下文，24 小时内编号保持一致。</p>
+        <div id="face-status" class="muted small"></div>
+        <div class="daily-row">
+          <button id="face-start" class="btn btn-primary">● 开始</button>
+          <button id="face-stop" class="btn" disabled>■ 停止</button>
+        </div>
+        <div class="field">
+          <label>实时字幕</label>
+          <div id="face-live" class="face-live textout-area"></div>
+        </div>
+        <div id="face-tags" class="face-tags hidden"></div>
+        <div class="field">
+          <label>标题（汇总总结后自动提取，可手动改）</label>
+          <input id="face-title" placeholder="留空则用「面聊 YYYY-MM-DD HH:mm」" />
+        </div>
+        <div class="field">
+          <label>转写原文（说话人已标注；可用 # 行写补充/修正）</label>
+          <textarea id="face-result" class="textout-area"></textarea>
+        </div>
+        <div class="daily-row">
+          <button id="face-sum" class="btn btn-ghost">📝 汇总总结</button>
+          <span class="muted small">把上方原文+#标注提炼为纪要</span>
+        </div>
+        <div class="field">
+          <label>纪要（可再编辑后保存）</label>
+          <textarea id="face-summary" class="textout-area"></textarea>
+        </div>
+      </div>
+      <div class="modal-foot">
+        <span class="spacer"></span>
+        <button id="face-save" class="btn btn-primary" disabled>保存为会议记录</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 语音速记 弹层（一句话识别，消费 5000×60s 额度） -->
+  <div id="voicememo" class="modal hidden">
+    <div class="modal-card">
+      <div class="modal-head"><h3>🎤 语音速记</h3><button id="vm-close" class="icon-btn">✕</button></div>
+      <div class="modal-body">
+        <p class="muted small">说一句话（≤60 秒），转成一条记录。消耗「一句话识别」免费额度（5000 次/月）。</p>
+        <div id="vm-status" class="muted small"></div>
+        <div class="daily-row">
+          <button id="vm-start" class="btn btn-primary">● 开始</button>
+          <button id="vm-stop" class="btn" disabled>■ 停止</button>
+        </div>
+        <div class="field">
+          <label>识别结果</label>
+          <textarea id="vm-result" class="textout-area"></textarea>
+        </div>
+        <div class="field">
+          <label>存入为</label>
+          <select id="vm-type">
+            <option value="inspiration">💡 灵感</option>
+            <option value="misc">📝 杂项</option>
+          </select>
+        </div>
+      </div>
+      <div class="modal-foot">
+        <span class="spacer"></span>
+        <button id="vm-save" class="btn btn-primary" disabled>保存</button>
+      </div>
+    </div>
+  </div>
+
   <!-- 设置 弹层 -->
   <div id="settings" class="modal hidden">
     <div class="modal-card wide">
@@ -223,7 +295,7 @@
 
   <script src="assets/crypto.js?v=20260717m"></script>
   <script src="assets/store.js?v=20260717m"></script>
-  <script src="assets/app.js?v=20260728a"></script>
+  <script src="assets/app.js?v=20260730a"></script>
   <script>
     if ('serviceWorker' in navigator) {
       window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));

@@ -121,7 +121,7 @@
   // 点击弹层遮罩（卡片外区域）关闭弹层（编辑器除外——避免误触丢失未保存内容）
   document.querySelectorAll('.modal').forEach(m => {
     if (m.id === 'editor') return; // 编辑器只能通过「退出」/「保存」/✕ 关闭
-    m.addEventListener('click', e => { if (e.target === m) { if (m.id === 'recorder') asrOnRecorderClose(); dismissModal('#' + m.id); } });
+    m.addEventListener('click', e => { if (e.target === m) { if (m.id === 'recorder') asrOnRecorderClose(); if (m.id === 'facechat') faceStop(); if (m.id === 'voicememo') vmStopMic(); dismissModal('#' + m.id); } });
   });
 
   // ---------- 解锁 ----------
@@ -1383,6 +1383,19 @@
     asrBindFileInput('f-rec-file');
     $('#rec-sum').onclick = recSummarize;
     $('#rec-save').onclick = recSave;
+    // 面聊：实时多人转写
+    $('#face-open-btn').onclick = openFacechat;
+    $('#face-close').onclick = () => { faceStop(); dismissModal('#facechat'); };
+    $('#face-start').onclick = faceStart;
+    $('#face-stop').onclick = faceStop;
+    $('#face-sum').onclick = faceSummarize;
+    $('#face-save').onclick = faceSave;
+    // 语音速记（一句话识别，消费 5000×60s 额度）
+    $('#vm-open-btn').onclick = openVoiceMemo;
+    $('#vm-close').onclick = () => { vmStopMic(); dismissModal('#voicememo'); };
+    $('#vm-start').onclick = vmStart;
+    $('#vm-stop').onclick = vmStop;
+    $('#vm-save').onclick = vmSave;
     // 日报类型编辑器内的按钮在 openEditor 内动态绑定（每次打开重新渲染）
     $('#sp-save').onclick = saveStyleUI;
     initSettings();
@@ -1398,6 +1411,249 @@
         if (modalStack.length) dismissModal(modalStack[modalStack.length - 1]);
       }
     });
+  }
+
+  // ============ 面聊：实时多人转写（WebSocket 实时识别 + 说话人分离） ============
+  // 走腾讯云实时语音识别 V2：浏览器经 SCF 签发的 wss 地址直连，麦克风 16k 单声道 PCM 分片发送，
+  // 服务端实时返回带 speaker_id 的字幕。开启 enable_speaker_context 后，复用同一 speaker_context_id
+  // 可在 24h 内保持说话人编号一致，配合前端手动打标实现「打一次、后续自动认人」。
+  const SPK_LABELS = ['甲', '乙', '丙', '丁', '戊', '己', '庚', '辛', '壬', '癸'];
+  const FACE_CTX_KEY = 'sparkbook.faceCtx';
+  const FACE_NAMES_KEY = 'sparkbook.faceNames';
+  let faceWs = null, faceCtxId = '', faceMicStream = null, faceAudioCtx = null, faceScriptNode = null, faceSrcNode = null;
+  let faceMap = {}, faceFinal = false, faceStopped = false, faceSpkSet = new Set();
+
+  function spkLabel(id) { if (id == null || id < 0) return '识别中'; return SPK_LABELS[id] || ('说话人' + (id + 1)); }
+  function faceLoadCtx() { return localStorage.getItem(FACE_CTX_KEY) || ''; }
+  function faceSaveCtx(c) { if (c) localStorage.setItem(FACE_CTX_KEY, c); }
+  function faceLoadNames(ctx) { try { return (JSON.parse(localStorage.getItem(FACE_NAMES_KEY) || '{}')[ctx]) || {}; } catch (e) { return {}; } }
+  function faceSaveNames(ctx, map) {
+    let all = {}; try { all = JSON.parse(localStorage.getItem(FACE_NAMES_KEY) || '{}'); } catch (e) {}
+    all[ctx] = map; localStorage.setItem(FACE_NAMES_KEY, JSON.stringify(all));
+  }
+  function faceResetUI() {
+    $('#face-live').innerHTML = ''; $('#face-result').value = ''; $('#face-summary').value = '';
+    $('#face-title').value = ''; $('#face-tags').classList.add('hidden'); $('#face-tags').innerHTML = '';
+    $('#face-status').textContent = ''; $('#face-start').disabled = false; $('#face-stop').disabled = true;
+    $('#face-save').disabled = true; faceMap = {}; faceFinal = false; faceStopped = false; faceSpkSet = new Set();
+  }
+  function openFacechat() { faceResetUI(); openModal('#facechat'); }
+
+  async function faceStart() {
+    $('#face-start').disabled = true; $('#face-stop').disabled = false;
+    $('#face-status').textContent = '正在请求麦克风并连接…';
+    try {
+      // 在用户手势内先取麦克风权限，避免异步后浏览器拦截
+      faceMicStream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+    } catch (e) { toast('麦克风失败：' + (e.message || e)); $('#face-start').disabled = false; $('#face-stop').disabled = true; return; }
+    try {
+      const savedCtx = faceLoadCtx();
+      const r = await fetch(API_BASE + '/api/asr/rt-url', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ speaker_context_id: savedCtx }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (d.code !== 0) throw new Error(d.msg || ('code ' + (d.code)));
+      faceCtxId = d.speaker_context_id; faceSaveCtx(faceCtxId);
+      faceWs = new WebSocket(d.url);
+    } catch (e) { toast('连接失败：' + (e.message || e)); faceStopMic(); $('#face-start').disabled = false; $('#face-stop').disabled = true; return; }
+    faceWs.onopen = () => { faceBuildAudio(); };
+    faceWs.onmessage = ev => faceOnMessage(ev.data);
+    faceWs.onerror = () => { $('#face-status').textContent = '连接异常，请重试'; };
+    faceWs.onclose = () => { if (!faceStopped) { faceStopped = true; } faceFinalize(); };
+  }
+
+  async function faceBuildAudio() {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    faceAudioCtx = new AC({ sampleRate: 16000 });
+    await faceAudioCtx.resume();
+    faceSrcNode = faceAudioCtx.createMediaStreamSource(faceMicStream);
+    faceScriptNode = faceAudioCtx.createScriptProcessor(4096, 1, 1);
+    faceScriptNode.onaudioprocess = e => {
+      if (!faceWs || faceWs.readyState !== 1) return;
+      const inp = e.inputBuffer.getChannelData(0);
+      const len = inp.length;
+      const buf = new ArrayBuffer(len * 2);
+      const view = new DataView(buf);
+      for (let i = 0; i < len; i++) { const s = Math.max(-1, Math.min(1, inp[i])); view.setInt16(i * 2, s < 0 ? s * 0x8000 : s * 0x7FFF, true); }
+      try { faceWs.send(buf); } catch (_) {}
+    };
+    faceSrcNode.connect(faceScriptNode);
+    faceScriptNode.connect(faceAudioCtx.destination); // 必须连到 destination 才会触发 onaudioprocess
+    $('#face-status').textContent = '已连接，请开始说话…';
+  }
+
+  function faceStopMic() {
+    if (faceMicStream) { faceMicStream.getTracks().forEach(t => t.stop()); faceMicStream = null; }
+    try { if (faceScriptNode) faceScriptNode.disconnect(); } catch (_) {}
+    try { if (faceSrcNode) faceSrcNode.disconnect(); } catch (_) {}
+    try { if (faceAudioCtx) faceAudioCtx.close(); } catch (_) {}
+    faceScriptNode = null; faceSrcNode = null; faceAudioCtx = null;
+  }
+
+  function faceStop() {
+    if (faceWs && faceWs.readyState === 1) { try { faceWs.send(JSON.stringify({ type: 'end' })); } catch (_) {} }
+    faceStopped = true;
+    $('#face-stop').disabled = true;
+    $('#face-status').textContent = '正在结束识别…';
+    faceStopMic();
+    setTimeout(() => { if (!faceFinal) faceFinalize(); }, 1800);
+  }
+
+  function faceOnMessage(data) {
+    let m; try { m = JSON.parse(data); } catch (_) { return; }
+    if (m.code !== undefined && m.code !== 0) {
+      $('#face-status').textContent = '识别错误 code=' + m.code + ' ' + (m.message || '');
+      toast('识别错误：' + (m.message || m.code));
+      return;
+    }
+    if (m.final === 1) { faceFinalize(); return; }
+    const s = m.sentences;
+    if (s && s.sentence !== undefined) { faceUpdateSentence(s); renderFaceLive(); }
+  }
+  function faceUpdateSentence(s) {
+    const id = s.sentence_id; if (id == null) return;
+    const spk = (s.speaker_id == null ? -1 : s.speaker_id);
+    faceMap[id] = { spk, text: (s.sentence || ''), final: s.sentence_type === 1 };
+    if (faceMap[id].final) faceSpkSet.add(spk);
+  }
+  function renderFaceLive() {
+    const ids = Object.keys(faceMap).map(Number).sort((a, b) => a - b);
+    const names = faceLoadNames(faceCtxId);
+    const html = ids.map(id => {
+      const it = faceMap[id];
+      const lab = names[it.spk] || spkLabel(it.spk);
+      return '<div class="face-line' + (it.final ? '' : ' face-pending') + '"><b>' + esc(lab) + '</b>：' + esc(it.text) + (it.final ? '' : ' …') + '</div>';
+    }).join('');
+    const box = $('#face-live'); box.innerHTML = html; box.scrollTop = box.scrollHeight;
+  }
+  function faceBuildTranscript(namesMap) {
+    namesMap = namesMap || {};
+    const ids = Object.keys(faceMap).map(Number).sort((a, b) => a - b);
+    const lines = [];
+    ids.forEach(id => {
+      const it = faceMap[id];
+      if (!it.final) return;
+      const lab = namesMap[it.spk] || spkLabel(it.spk);
+      lines.push('[' + lab + '] ' + it.text);
+    });
+    return lines.join('\n');
+  }
+  function faceFinalize() {
+    if (faceFinal) return; faceFinal = true;
+    $('#face-status').textContent = '识别结束，请核对并给说话人打标';
+    faceStopMic();
+    const transcript = faceBuildTranscript({});
+    $('#face-result').value = transcript;
+    $('#face-save').disabled = !transcript.trim();
+    faceRenderTags();
+    $('#face-start').disabled = false; $('#face-stop').disabled = true;
+    if (faceWs && faceWs.readyState === 1) { try { faceWs.close(); } catch (_) {} }
+  }
+  function faceRenderTags() {
+    const names = faceLoadNames(faceCtxId);
+    const ids = [...faceSpkSet].sort((a, b) => a - b);
+    if (!ids.length) { $('#face-tags').classList.add('hidden'); return; }
+    let html = '<label class="face-tags-label">说话人打标（把「' + spkLabel(ids[0]) + '」改为姓名，后续同圈子自动沿用）</label><div class="face-tags-row">';
+    ids.forEach(id => {
+      const def = names[id] || spkLabel(id);
+      html += '<span class="face-tag">' + spkLabel(id) + ' → <input class="face-tag-input" data-spk="' + id + '" value="' + esc(def) + '" placeholder="姓名" /></span>';
+    });
+    html += '</div><button type="button" id="face-apply" class="btn btn-ghost">应用标记</button>';
+    const box = $('#face-tags'); box.innerHTML = html; box.classList.remove('hidden');
+    $('#face-apply').onclick = faceApplyTags;
+  }
+  function faceApplyTags() {
+    const inputs = $('#face-tags').querySelectorAll('.face-tag-input');
+    const map = faceLoadNames(faceCtxId);
+    inputs.forEach(inp => { const v = inp.value.trim(); if (v) map[Number(inp.dataset.spk)] = v; });
+    faceSaveNames(faceCtxId, map);
+    $('#face-result').value = faceBuildTranscript(map);
+    toast('已标记并保存，下次同圈子面聊自动沿用');
+  }
+  async function faceSummarize() {
+    const { transcript, context } = splitTranscript($('#face-result').value);
+    if (!transcript) { toast('没有可总结的原文'); return; }
+    $('#face-status').textContent = 'AI 提炼纪要中…';
+    try {
+      const sp = store.styleProfile();
+      const terms = (sp && sp.terms) ? sp.terms : [];
+      const rules = (sp && sp.rules) ? sp.rules : [];
+      const samples = (sp && sp.samples) ? sp.samples : [];
+      const res = await summarizeMeeting(transcript, context, terms, rules, samples);
+      $('#face-summary').value = res.summary || '';
+      const topic = extractTopic(res.summary);
+      if (topic) { const cur = ($('#face-title').value || '').trim(); if (!cur || cur.startsWith('面聊 ')) $('#face-title').value = topic; }
+      $('#face-status').textContent = res.summary ? '已生成纪要（可再编辑）' : '纪要生成失败，已保留原文';
+      if (res.llmWarn) toast(res.llmWarn);
+    } catch (e) { $('#face-status').textContent = ''; toast('总结失败：' + (e.message || e)); }
+  }
+  async function faceSave() {
+    const text = $('#face-result').value.trim();
+    if (!text) { toast('没有可保存的内容'); return; }
+    const summary = ($('#face-summary').value || '').trim();
+    const title = ($('#face-title').value || '').trim() || ('面聊 ' + new Date().toISOString().slice(0, 16).replace('T', ' '));
+    store.addEntry({ type: 'meeting', title, meetingDate: new Date().toISOString().slice(0, 16).replace('T', ' '), body: text, summary });
+    await sync();
+    toast('已保存为会议记录（原文+纪要）');
+    dismissModal('#facechat', { force: true });
+  }
+
+  // ============ 语音速记：一句话识别（消费 5000×60s 免费额度） ============
+  let vmChunks = [], vmStream = null, vmAudioCtx = null, vmNode = null, vmSrc = null, vmTimer = null;
+  function vmResetBtns() { $('#vm-start').disabled = false; $('#vm-stop').disabled = true; }
+  function openVoiceMemo() { $('#vm-result').value = ''; $('#vm-status').textContent = ''; $('#vm-save').disabled = true; vmResetBtns(); openModal('#voicememo'); }
+  function bufToBase64(buf) { const bytes = new Uint8Array(buf); let bin = ''; for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]); return btoa(bin); }
+  async function vmStart() {
+    $('#vm-start').disabled = true; $('#vm-stop').disabled = false; $('#vm-status').textContent = '正在聆听（最长 60 秒）…';
+    try { vmStream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } }); }
+    catch (e) { toast('麦克风失败：' + (e.message || e)); vmResetBtns(); return; }
+    const AC = window.AudioContext || window.webkitAudioContext;
+    vmAudioCtx = new AC({ sampleRate: 16000 }); await vmAudioCtx.resume();
+    vmSrc = vmAudioCtx.createMediaStreamSource(vmStream);
+    vmNode = vmAudioCtx.createScriptProcessor(4096, 1, 1);
+    vmChunks = [];
+    vmNode.onaudioprocess = e => {
+      const inp = e.inputBuffer.getChannelData(0); const len = inp.length;
+      const b = new Uint8Array(len * 2); const v = new DataView(b.buffer);
+      for (let i = 0; i < len; i++) { const s = Math.max(-1, Math.min(1, inp[i])); v.setInt16(i * 2, s < 0 ? s * 0x8000 : s * 0x7FFF, true); }
+      vmChunks.push(b);
+    };
+    vmSrc.connect(vmNode); vmNode.connect(vmAudioCtx.destination);
+    vmTimer = setTimeout(vmStop, 60000);
+  }
+  function vmStopMic() {
+    if (vmStream) { vmStream.getTracks().forEach(t => t.stop()); vmStream = null; }
+    try { if (vmNode) vmNode.disconnect(); } catch (_) {}
+    try { if (vmSrc) vmSrc.disconnect(); } catch (_) {}
+    try { if (vmAudioCtx) vmAudioCtx.close(); } catch (_) {}
+    vmNode = null; vmSrc = null; vmAudioCtx = null;
+  }
+  function vmStop() {
+    if (vmTimer) { clearTimeout(vmTimer); vmTimer = null; }
+    $('#vm-stop').disabled = true; $('#vm-status').textContent = '识别中…';
+    vmStopMic();
+    const total = vmChunks.reduce((a, b) => a + b.length, 0);
+    const merged = new Uint8Array(total); let off = 0; for (const c of vmChunks) { merged.set(c, off); off += c.length; }
+    vmChunks = [];
+    if (!total) { $('#vm-status').textContent = ''; toast('没有录到声音'); vmResetBtns(); return; }
+    const b64 = bufToBase64(merged.buffer);
+    fetch(API_BASE + '/api/asr/sentence', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ data: b64 }) })
+      .then(r => r.json()).then(d => {
+        if (d.code !== 0) throw new Error(d.msg || ('code ' + d.code));
+        $('#vm-result').value = d.text || '';
+        $('#vm-save').disabled = !(d.text && d.text.trim());
+        $('#vm-status').textContent = '识别完成';
+      }).catch(e => { $('#vm-status').textContent = ''; toast('识别失败：' + (e.message || e)); })
+      .finally(() => { vmResetBtns(); });
+  }
+  async function vmSave() {
+    const text = $('#vm-result').value.trim(); if (!text) { toast('没有可保存的内容'); return; }
+    const type = $('#vm-type').value || 'inspiration';
+    store.addEntry({ type, body: text });
+    await sync();
+    toast('已保存为' + (type === 'inspiration' ? '灵感' : '杂项'));
+    dismissModal('#voicememo', { force: true });
   }
 
   // ---------- 启动 ----------

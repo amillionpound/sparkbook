@@ -6,6 +6,7 @@ sparkbook — SCF Web 函数后端（纯 API 服务）
   - /api/ai          调 DeepSeek 生成/进化日报与会议纪要（开启 prompt caching）
   - /api/asr/upload  接收浏览器上传的录音字节（支持分片），服务端用 COS 分块上传写入临时桶（中继，免 CORS/免直连）
   - /api/asr/transcribe 用腾讯云 ASR 对临时音频转写，返回文本并清理（标准版免费额度耗尽自动回退极速版 flash）
+  - /api/asr/rt-url  为前端实时面聊签发带签名的 wss 地址（实时 V2 + 说话人分离 + 跨会话 speaker_context）
   - /api/vault/save   接收浏览器加密信封（密文），服务端凭证写入 COS（中继，免 CORS）
   - /api/vault/load   服务端凭证从 COS 读回加密信封（中继，免 CORS）
   - /api/vault/presign 仅备用：下发 COS 预签名 URL（当前 vault 走中继，未用直传）
@@ -24,6 +25,7 @@ import re
 import hmac
 import hashlib
 import uuid
+import urllib.parse
 
 import requests
 from flask import Flask, request, jsonify, Response
@@ -629,6 +631,119 @@ def asr_transcribe_flash(cos_key):
         return '\n'.join(texts), None
     except Exception as e:  # noqa: BLE001
         return None, '极速版调用异常: ' + str(e)
+
+
+# ------------------------- 实时语音识别 V2（WebSocket）签名 mint -------------------------
+# 浏览器不能直接持有 SecretKey，故由 SCF 生成带签名的 wss 地址，前端直连腾讯云。
+# 使用支持说话人分离的引擎 16k_zh_en_speaker_2.0，并开启 enable_speaker_context：
+# 传入同一个 speaker_context_id 时，多次实时任务的说话人编号会自动保持一致（24h 内有效），
+# 从而实现「跨会话认人」（配合前端手动打标 甲=张三）。
+def _asr_rt_sign(engine, voice_format, enable_ctx, ctx_id):
+    """生成实时 V2 的带签名 wss 地址。返回 (url, voice_id)。"""
+    appid = COS_APPID
+    secret_id = COS_SECRET_ID
+    secret_key = COS_SECRET_KEY
+    ts = int(time.time())
+    expired = ts + 7200  # 签名有效期 2h（连接须在此窗口内建立）
+    # nonce：随机正整数，最长 10 位
+    nonce = int(uuid.uuid4().hex[:9], 16) % (10 ** 10)
+    voice_id = uuid.uuid4().hex  # 每次连接必须全新 voice_id
+    params = [
+        ('secretid', secret_id),
+        ('timestamp', str(ts)),
+        ('expired', str(expired)),
+        ('nonce', str(nonce)),
+        ('engine_model_type', engine),
+        ('voice_id', voice_id),
+        ('speaker_diarization', '1'),
+        ('enable_speaker_context', str(enable_ctx)),
+        ('speaker_context_id', ctx_id),
+        ('voice_format', str(voice_format)),
+        ('needvad', '1'),
+    ]
+    # 签名原文 = host+path + '?' + 除 signature 外所有参数按字典序拼接（用原始值，不编码）
+    params_sorted = sorted(params, key=lambda x: x[0])
+    query_raw = '&'.join('%s=%s' % (k, v) for k, v in params_sorted)
+    signstr = 'asr.cloud.tencent.com/asr/v2/%s?%s' % (appid, query_raw)
+    sig = hmac.new(secret_key.encode('utf-8'), signstr.encode('utf-8'), hashlib.sha1).digest()
+    sig_b64 = base64.b64encode(sig).decode('utf-8')
+    sig_q = urllib.parse.quote(sig_b64, safe='')  # 必须对 +/= 等编码，否则鉴权偶败
+    # 实际 wss 地址：参数值做 urlencode，signature 单独拼
+    query_final = '&'.join('%s=%s' % (k, urllib.parse.quote(str(v), safe='')) for k, v in params_sorted)
+    url = 'wss://asr.cloud.tencent.com/asr/v2/%s?%s&signature=%s' % (appid, query_final, sig_q)
+    return url, voice_id
+
+
+@app.route('/api/asr/rt-url', methods=['POST', 'OPTIONS'])
+def asr_rt_url_route():
+    """为前端实时面聊签发 wss 地址。body 可选：engine / voice_format /
+    enable_speaker_context / speaker_context_id（跨会话一致性；不传则由服务端生成并返回）。"""
+    if request.method == 'OPTIONS':
+        return ('', 204)
+    if not authorized():
+        return auth_fail()
+    d = request.get_json(force=True, silent=True) or {}
+    engine = d.get('engine') or '16k_zh_en_speaker_2.0'
+    try:
+        voice_format = int(d.get('voice_format') or 1)
+    except (TypeError, ValueError):
+        voice_format = 1
+    enable_ctx = 1 if d.get('enable_speaker_context') is None else int(d.get('enable_speaker_context') or 0)
+    ctx_id = (d.get('speaker_context_id') or '').strip()
+    if not ctx_id:
+        ctx_id = uuid.uuid4().hex  # 前端需持久化此 ID 以实现跨会话一致
+    try:
+        url, voice_id = _asr_rt_sign(engine, voice_format, enable_ctx, ctx_id)
+    except Exception as e:  # noqa: BLE001
+        return jsonify({'code': 4, 'msg': '实时签名失败: ' + str(e)}), 502
+    return jsonify({'code': 0, 'url': url, 'voice_id': voice_id,
+                    'speaker_context_id': ctx_id, 'engine': engine})
+
+
+@app.route('/api/asr/sentence', methods=['POST', 'OPTIONS'])
+def asr_sentence_route():
+    """一句话识别（消耗 5000次/月 免费额度）：前端 WebAudio 采集 16k PCM，base64 直传，返回单句文本。"""
+    if request.method == 'OPTIONS':
+        return ('', 204)
+    if not authorized():
+        return auth_fail()
+    d = request.get_json(force=True, silent=True) or {}
+    b64 = (d.get('data') or '').strip()
+    if not b64:
+        return jsonify({'code': 2, 'msg': '缺少音频数据'}), 400
+    try:
+        raw = base64.b64decode(b64)
+    except Exception:
+        return jsonify({'code': 2, 'msg': '音频数据非法'}), 400
+    # 60 秒 PCM@16k 约 1.92MB，留点余量
+    if len(raw) > 60 * 16000 * 2 + 4096:
+        return jsonify({'code': 3, 'msg': '语音速记单次上限 60 秒'}), 400
+    try:
+        from tencentcloud.common import credential
+        from tencentcloud.asr.v20190614 import asr_client, models
+        from tencentcloud.common.exception.tencent_cloud_sdk_exception import (
+            TencentCloudSDKException,
+        )
+        cred = credential.Credential(COS_SECRET_ID, COS_SECRET_KEY)
+        client = asr_client.AsrClient(cred, COS_REGION)
+        req = models.SentenceRecognitionRequest()
+        req.ProjectId = 0
+        req.SubServiceType = 2
+        req.EngineModelType = '16k_zh'
+        req.SourceType = 1  # 1=语音数据（base64）
+        req.VoiceFormat = 'pcm'
+        req.UsrAudioKey = 'sparkbook-' + uuid.uuid4().hex[:12]
+        req.Data = base64.b64encode(raw).decode('ascii')
+        req.DataLen = len(raw)
+        req.FilterDirty = 0
+        req.FilterModal = 0
+        req.ConvertNumMode = 1
+        resp = client.SentenceRecognition(req)
+        return jsonify({'code': 0, 'text': (resp.Result or '')})
+    except TencentCloudSDKException as e:
+        return jsonify({'code': 4, 'msg': '一句话识别失败: ' + str(e)}), 502
+    except Exception as e:  # noqa: BLE001
+        return jsonify({'code': 4, 'msg': '一句话识别异常: ' + str(e)}), 502
 
 
 # ------------------------- 会议纪要提炼（LLM） -------------------------
