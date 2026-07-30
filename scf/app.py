@@ -26,6 +26,7 @@ import hmac
 import hashlib
 import uuid
 import urllib.parse
+import base64
 
 import requests
 from flask import Flask, request, jsonify, Response
