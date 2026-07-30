@@ -1415,14 +1415,16 @@
     });
   }
 
-  // ============ 面聊：多人对话转写（录完再转：批量识别 + 说话人分离） ============
-  // 流程：麦克风录 16k 单声道 PCM → 结束时打包 WAV → 复用分片上传（/api/asr/upload）→
-  // /api/asr/transcribe(diarize=1) 批量识别返回带 speaker_id 的分段 → 打标 → AI 纪要 → 存会议。
-  // 走「录音文件识别极速版/标准版」免费额度，不依赖实时语音识别额度。
-  // 注意：批量模式说话人编号仅本次录音内有效（跨场次不保证一致），打标为本次会话生效。
+  // ============ 面聊：混合模式（实时免费字幕 + 结束后批量分人） ============
+  // 录制期：16k PCM 同时 (a) 喂实时 WS（engine=16k_zh，吃实时5h免费包，边说边出字幕不分人）
+  // 与 (b) 累积本地缓冲用于结束打包 WAV。
+  // 结束：关 WS → 上传 WAV → /api/asr/transcribe(diarize=1) 批量分离说话人（极速5h/标准10h免费包）
+  // → 自动把实时草稿替换为甲/乙标注全文 → 打标 → AI 纪要 → 存会议。
+  // 说明：实时通道不含说话人信息（免费路径不支持实时分人），分人在结束后批量补上。
   const SPK_LABELS = ['甲', '乙', '丙', '丁', '戊', '己', '庚', '辛', '壬', '癸'];
   let faceMicStream = null, faceAudioCtx = null, faceScriptNode = null, faceSrcNode = null;
   let faceChunks = [], faceRate = 16000, faceTimer = null, faceT0 = 0, faceRecording = false, faceBusy = false;
+  let faceWs = null, faceLiveMap = {}, faceLive = false, faceRtOk = true;
   let faceSegs = [], faceNames = {}, faceSpkSet = new Set();
 
   function spkLabel(id) { if (id == null || id < 0) return '未知'; return SPK_LABELS[id] || ('说话人' + (id + 1)); }
@@ -1432,9 +1434,25 @@
     $('#face-status').textContent = ''; $('#face-start').disabled = false; $('#face-stop').disabled = true;
     $('#face-save').disabled = true;
     faceChunks = []; faceSegs = []; faceNames = {}; faceSpkSet = new Set();
+    faceLiveMap = {}; faceLive = false; faceRtOk = true;
     faceRecording = false; faceBusy = false;
   }
   function openFacechat() { faceResetUI(); openModal('#facechat'); }
+
+  // 任意采样率 → 16k 单声道 PCM（线性插值），保证实时与批量两种通道都按 16k 喂入
+  function faceResample16k(inp, inRate) {
+    if (inRate === faceRate) { // faceRate 已设为 16000
+      const b = new Uint8Array(inp.length * 2); const v = new DataView(b.buffer);
+      for (let i = 0; i < inp.length; i++) { const s = Math.max(-1, Math.min(1, inp[i])); v.setInt16(i * 2, s < 0 ? s * 0x8000 : s * 0x7FFF, true); }
+      return b;
+    }
+    const ratio = inRate / 16000, n = Math.max(1, Math.floor(inp.length / ratio));
+    const out = new Float32Array(n);
+    for (let i = 0; i < n; i++) { const idx = i * ratio; const j = Math.floor(idx); const frac = idx - j; const a = inp[j] || 0; const b = inp[j + 1] || 0; out[i] = a + (b - a) * frac; }
+    const buf = new Uint8Array(n * 2); const v = new DataView(buf.buffer);
+    for (let i = 0; i < n; i++) { const s = Math.max(-1, Math.min(1, out[i])); v.setInt16(i * 2, s < 0 ? s * 0x8000 : s * 0x7FFF, true); }
+    return buf;
+  }
 
   async function faceStart() {
     if (faceRecording || faceBusy) return;
@@ -1446,30 +1464,37 @@
     const AC = window.AudioContext || window.webkitAudioContext;
     faceAudioCtx = new AC({ sampleRate: 16000 });
     await faceAudioCtx.resume();
-    faceRate = faceAudioCtx.sampleRate || 16000; // 个别浏览器不接受指定采样率，以实际为准写进 WAV 头
+    faceRate = faceAudioCtx.sampleRate || 16000;
     faceSrcNode = faceAudioCtx.createMediaStreamSource(faceMicStream);
     faceScriptNode = faceAudioCtx.createScriptProcessor(4096, 1, 1);
     faceChunks = [];
     faceScriptNode.onaudioprocess = e => {
       const inp = e.inputBuffer.getChannelData(0);
-      const len = inp.length;
-      const b = new Uint8Array(len * 2); const v = new DataView(b.buffer);
-      for (let i = 0; i < len; i++) { const s = Math.max(-1, Math.min(1, inp[i])); v.setInt16(i * 2, s < 0 ? s * 0x8000 : s * 0x7FFF, true); }
-      faceChunks.push(b);
+      const pcm16 = faceResample16k(inp, faceRate);
+      faceChunks.push(pcm16);                 // 本地缓冲（批量分人用）
+      if (faceWs && faceWs.readyState === 1) { try { faceWs.send(pcm16); } catch (_) {} } // 实时字幕
     };
     faceSrcNode.connect(faceScriptNode);
     faceScriptNode.connect(faceAudioCtx.destination); // 必须连到 destination 才会触发 onaudioprocess
     faceRecording = true; faceT0 = Date.now();
+    // 实时通道：标准引擎 16k_zh（实时5h免费包，不支持分人 → 字幕不分人）
+    try {
+      const r = await fetch(API_BASE + '/api/asr/rt-url', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ engine: '16k_zh' }) });
+      const d = await r.json().catch(() => ({}));
+      if (d.code === 0) { faceWs = new WebSocket(d.url); faceWs.onmessage = ev => faceOnMessage(ev.data); faceWs.onerror = () => { faceRtOk = false; }; }
+    } catch (_) { faceRtOk = false; }
     faceTimer = setInterval(() => {
       const sec = Math.floor((Date.now() - faceT0) / 1000);
       const mm = String(Math.floor(sec / 60)).padStart(2, '0'), ss = String(sec % 60).padStart(2, '0');
-      $('#face-status').textContent = '● 录音中 ' + mm + ':' + ss + '（结束后一次性转写，支持分人）';
+      $('#face-status').textContent = '● 录音中 ' + mm + ':' + ss + (faceRtOk ? '（实时字幕中…）' : '（实时字幕暂不可用，仍会在结束后转写）');
     }, 500);
-    $('#face-status').textContent = '● 录音中 00:00（结束后一次性转写，支持分人）';
+    $('#face-status').textContent = '● 录音中 00:00（实时字幕中…）';
   }
 
   function faceStopMic() {
     if (faceTimer) { clearInterval(faceTimer); faceTimer = null; }
+    if (faceWs && faceWs.readyState === 1) { try { faceWs.send(JSON.stringify({ type: 'end' })); } catch (_) {} try { faceWs.close(); } catch (_) {} }
+    faceWs = null;
     if (faceMicStream) { faceMicStream.getTracks().forEach(t => t.stop()); faceMicStream = null; }
     try { if (faceScriptNode) faceScriptNode.disconnect(); } catch (_) {}
     try { if (faceSrcNode) faceSrcNode.disconnect(); } catch (_) {}
@@ -1481,8 +1506,27 @@
   // 关闭弹层/中途放弃：只停麦克风、丢弃音频，不触发转写
   function faceAbort() {
     faceStopMic();
-    faceChunks = [];
+    faceChunks = []; faceLiveMap = {};
     $('#face-start').disabled = false; $('#face-stop').disabled = true;
+  }
+
+  function faceOnMessage(data) {
+    let m; try { m = JSON.parse(data); } catch (_) { return; }
+    if (m.code !== undefined && m.code !== 0) { faceRtOk = false; return; }
+    const res = m.result;
+    if (!res) return;
+    const idx = res.index, txt = res.voice_text_str || '', slice = res.slice_type;
+    if (idx == null || txt === '') return;
+    faceLiveMap[idx] = { text: txt, final: slice === 2 };
+    faceRenderLive();
+  }
+  function faceRenderLive() {
+    const idxs = Object.keys(faceLiveMap).map(Number).sort((a, b) => a - b);
+    const html = idxs.map(i => {
+      const it = faceLiveMap[i];
+      return '<div class="face-line' + (it.final ? '' : ' face-pending') + '">' + esc(it.text) + (it.final ? '' : ' …') + '</div>';
+    }).join('');
+    const box = $('#face-live'); box.innerHTML = html; box.scrollTop = box.scrollHeight;
   }
 
   function faceBuildWav() {
@@ -1492,7 +1536,7 @@
     const wstr = (off, s) => { for (let i = 0; i < s.length; i++) dv.setUint8(off + i, s.charCodeAt(i)); };
     wstr(0, 'RIFF'); dv.setUint32(4, 36 + total, true); wstr(8, 'WAVE');
     wstr(12, 'fmt '); dv.setUint32(16, 16, true); dv.setUint16(20, 1, true); dv.setUint16(22, 1, true);
-    dv.setUint32(24, faceRate, true); dv.setUint32(28, faceRate * 2, true); dv.setUint16(32, 2, true); dv.setUint16(34, 16, true);
+    dv.setUint32(24, 16000, true); dv.setUint32(28, 32000, true); dv.setUint16(32, 2, true); dv.setUint16(34, 16, true);
     wstr(36, 'data'); dv.setUint32(40, total, true);
     let off = 44; for (const c of faceChunks) { wav.set(c, off); off += c.length; }
     faceChunks = [];
@@ -1505,7 +1549,7 @@
     $('#face-stop').disabled = true;
     faceStopMic();
     const total = faceChunks.reduce((a, b) => a + b.length, 0);
-    if (total < faceRate) { // 不足 0.5 秒有效音频
+    if (total < 8000) { // 不足 0.25 秒有效音频
       $('#face-status').textContent = ''; toast('没有录到声音'); faceChunks = [];
       $('#face-start').disabled = false; faceBusy = false; return;
     }

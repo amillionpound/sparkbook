@@ -680,8 +680,10 @@ def asr_transcribe_flash(cos_key, diarize=False):
 # 使用支持说话人分离的引擎 16k_zh_en_speaker_2.0，并开启 enable_speaker_context：
 # 传入同一个 speaker_context_id 时，多次实时任务的说话人编号会自动保持一致（24h 内有效），
 # 从而实现「跨会话认人」（配合前端手动打标 甲=张三）。
-def _asr_rt_sign(engine, voice_format, enable_ctx, ctx_id):
-    """生成实时 V2 的带签名 wss 地址。返回 (url, voice_id)。"""
+def _asr_rt_sign(engine, voice_format, enable_ctx, ctx_id, diarize=False):
+    """生成实时 V2 的带签名 wss 地址。返回 (url, voice_id)。
+    diarize=False 时不附加说话人参数（标准引擎如 16k_zh 不支持，附加会 4001；
+    且实时说话人分离是独立付费 SKU，免费 5h 包只覆盖标准引擎纯识别）。"""
     appid = COS_APPID
     secret_id = COS_SECRET_ID
     secret_key = COS_SECRET_KEY
@@ -697,12 +699,15 @@ def _asr_rt_sign(engine, voice_format, enable_ctx, ctx_id):
         ('nonce', str(nonce)),
         ('engine_model_type', engine),
         ('voice_id', voice_id),
-        ('speaker_diarization', '1'),
-        ('enable_speaker_context', str(enable_ctx)),
-        ('speaker_context_id', ctx_id),
         ('voice_format', str(voice_format)),
         ('needvad', '1'),
     ]
+    if diarize:
+        params += [
+            ('speaker_diarization', '1'),
+            ('enable_speaker_context', str(enable_ctx)),
+            ('speaker_context_id', ctx_id),
+        ]
     # 签名原文 = host+path + '?' + 除 signature 外所有参数按字典序拼接（用原始值，不编码）
     params_sorted = sorted(params, key=lambda x: x[0])
     query_raw = '&'.join('%s=%s' % (k, v) for k, v in params_sorted)
@@ -725,7 +730,10 @@ def asr_rt_url_route():
     if not authorized():
         return auth_fail()
     d = request.get_json(force=True, silent=True) or {}
-    engine = d.get('engine') or '16k_zh_en_speaker_2.0'
+    # 默认 16k_zh 标准引擎：吃「实时语音识别 5h/月」免费包。
+    # 说话人分离引擎(16k_zh_en_speaker_2.0)属大模型2.0付费SKU，需显式传 engine+diarize。
+    engine = d.get('engine') or '16k_zh'
+    diarize = bool(d.get('diarize'))
     try:
         voice_format = int(d.get('voice_format') or 1)
     except (TypeError, ValueError):
@@ -735,7 +743,7 @@ def asr_rt_url_route():
     if not ctx_id:
         ctx_id = uuid.uuid4().hex  # 前端需持久化此 ID 以实现跨会话一致
     try:
-        url, voice_id = _asr_rt_sign(engine, voice_format, enable_ctx, ctx_id)
+        url, voice_id = _asr_rt_sign(engine, voice_format, enable_ctx, ctx_id, diarize=diarize)
     except Exception as e:  # noqa: BLE001
         return jsonify({'code': 4, 'msg': '实时签名失败: ' + str(e)}), 502
     return jsonify({'code': 0, 'url': url, 'voice_id': voice_id,
