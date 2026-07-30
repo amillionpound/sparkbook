@@ -1503,6 +1503,11 @@
   function faceOnMessage(data) {
     let m; try { m = JSON.parse(data); } catch (_) { return; }
     if (m.code !== undefined && m.code !== 0) {
+      if (m.code === 4004) {
+        $('#face-status').textContent = '实时识别额度已耗尽（4004）：请在腾讯云「语音识别」控制台开通后付费或购买资源包；或改用「🎙 录音转写」录制后转写（同样支持说话人分离）。';
+        toast('实时识别额度耗尽（4004）');
+        return;
+      }
       $('#face-status').textContent = '识别错误 code=' + m.code + ' ' + (m.message || '');
       toast('识别错误：' + (m.message || m.code));
       return;
