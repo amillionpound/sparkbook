@@ -493,8 +493,32 @@ def vault_load():
 
 
 # ------------------------- 腾讯云 ASR（录音文件识别） -------------------------
-def _asr_standard_try(cos_key, expired, flash_fallback):
-    """标准版（CreateRecTask），精度最高；flash_fallback=True 时免费额度耗尽自动回退极速版。"""
+def _parse_standard_segments(raw):
+    """解析标准版开启说话人分离后的 Result 文本。
+    行格式形如 [0:1.640,0:3.020,0]  文本（末位数字为 speaker_id）。
+    返回 (纯文本, segments)；解析不出说话人时 segments 为空列表。"""
+    segments = []
+    texts = []
+    pat = re.compile(r'^\[[\d:.]+,[\d:.]+(?:,(\d+))?\]\s*(.*)$')
+    for line in (raw or '').splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        m = pat.match(line)
+        if m:
+            txt = m.group(2).strip()
+            if txt:
+                texts.append(txt)
+                if m.group(1) is not None:
+                    segments.append({'speaker_id': int(m.group(1)), 'text': txt})
+        else:
+            texts.append(line)
+    return '\n'.join(texts), segments
+
+
+def _asr_standard_try(cos_key, expired, flash_fallback, diarize=False):
+    """标准版（CreateRecTask），精度最高；flash_fallback=True 时免费额度耗尽自动回退极速版。
+    返回 (text, segments, err) 三元组。"""
     try:
         from tencentcloud.common import credential
         from tencentcloud.asr.v20190614 import asr_client, models
@@ -511,6 +535,9 @@ def _asr_standard_try(cos_key, expired, flash_fallback):
         req.ResTextFormat = 0            # 0=原文本（适合做纪要）
         req.SourceType = 0               # 0=URL 方式
         req.Url = url
+        if diarize:
+            req.SpeakerDiarization = 1   # 开启说话人分离
+            req.SpeakerNumber = 0        # 0=自动判断人数
         resp = client.CreateRecTask(req)
         task_id = resp.Data.TaskId
         # 轮询任务状态（最多约 3 分钟，留余量给 LLM 纪要提炼）
@@ -520,37 +547,42 @@ def _asr_standard_try(cos_key, expired, flash_fallback):
             status_req.TaskId = task_id
             st = client.DescribeTaskStatus(status_req)
             if st.Data.Status == 2:      # 成功
-                return st.Data.Result, None
+                if diarize:
+                    text, segments = _parse_standard_segments(st.Data.Result)
+                    return text, segments, None
+                return st.Data.Result, [], None
             if st.Data.Status in (3, -1):  # 失败
-                return None, 'ASR 任务失败 status={0}'.format(st.Data.Status)
-        return None, 'ASR 超时（超过 4 分钟）'
+                return None, [], 'ASR 任务失败 status={0}'.format(st.Data.Status)
+        return None, [], 'ASR 超时（超过 4 分钟）'
     except TencentCloudSDKException as e:
         code = getattr(e, 'code', '') or ''
         emsg = str(e)
         # 标准版免费额度耗尽 → 自动回退极速版（独立免费包，精度略降，单文件≤2h/100MB）
         if flash_fallback and ('NoFreeAmount' in code or 'NoFreeAmount' in emsg):
             try:
-                return asr_transcribe_flash(cos_key)
+                return asr_transcribe_flash(cos_key, diarize=diarize)
             except Exception as fe:  # noqa: BLE001
-                return None, '标准版免费额度已用尽；极速版回退失败: ' + str(fe)
-        return None, '腾讯云 ASR 错误: ' + emsg
+                return None, [], '标准版免费额度已用尽；极速版回退失败: ' + str(fe)
+        return None, [], '腾讯云 ASR 错误: ' + emsg
     except Exception as e:  # noqa: BLE001
-        return None, 'ASR 异常: ' + str(e)
+        return None, [], 'ASR 异常: ' + str(e)
 
 
-def asr_transcribe(cos_key, engine_pref='standard', expired=3600):
+def asr_transcribe(cos_key, engine_pref='standard', expired=3600, diarize=False):
     """按偏好选择转写引擎，主引擎失败时自动回退次选，尽量出结果。
     engine_pref: 'standard'（默认，精度最高）或 'flash'（极速版，精度略降，单文件≤2h/100MB）。
     - standard 优先：免费额度耗尽 → 回退 flash（仅当文件≤2h/100MB）。
     - flash 优先：额度/时长/大小超限 → 回退 standard（不再回退 flash，避免循环）。
+    diarize=True 时开启说话人分离，segments=[{speaker_id,text}]。
+    返回 (text, segments, err) 三元组。
     """
     if engine_pref == 'flash':
-        text, err = asr_transcribe_flash(cos_key)
+        text, segments, err = asr_transcribe_flash(cos_key, diarize=diarize)
         if text is not None:
-            return text, None
+            return text, segments, None
         # 极速版不可用（额度/时长/大小限制）→ 回退标准版（不再回退 flash，避免循环）
-        return _asr_standard_try(cos_key, expired, flash_fallback=False)
-    return _asr_standard_try(cos_key, expired, flash_fallback=True)
+        return _asr_standard_try(cos_key, expired, flash_fallback=False, diarize=diarize)
+    return _asr_standard_try(cos_key, expired, flash_fallback=True, diarize=diarize)
 
 
 # ------------------------- 腾讯云 ASR 极速版（flash）回退 -------------------------
@@ -586,16 +618,17 @@ _FLASH_VOICE_FORMAT = {
 }
 
 
-def asr_transcribe_flash(cos_key):
+def asr_transcribe_flash(cos_key, diarize=False):
     """极速版 flash 转写：下载临时音频字节直接 POST 到 asr.cloud.tencent.com。
-    返回 (text, err)，text=None 表示失败。"""
+    返回 (text, segments, err)：text=None 表示失败；segments 为说话人分段
+    [{speaker_id, text}]（仅 diarize=True 时填充，否则为空列表）。"""
     try:
         cos = _cos_client()
         # 极速版单文件上限 100MB，先查大小避免无谓下载
         head = cos.head_object(Bucket=COS_BUCKET, Key=cos_key.lstrip('/'))
         size = int(head.get('Content-Length', 0) or 0)
         if size > 100 * 1024 * 1024:
-            return None, '极速版单文件上限 100MB，当前 %.1fMB，无法回退' % (size / 1024.0 / 1024.0)
+            return None, [], '极速版单文件上限 100MB，当前 %.1fMB，无法回退' % (size / 1024.0 / 1024.0)
         # 取音频字节流（流式上传，避免大文件占满 SCF 内存）
         obj = cos.get_object(Bucket=COS_BUCKET, Key=cos_key.lstrip('/'))
         body = obj['Body'].get_stream()
@@ -608,7 +641,7 @@ def asr_transcribe_flash(cos_key):
             ('engine_type', '16k_zh'),
             ('voice_format', voice_format),
             ('convert_num_mode', '1'),
-            ('speaker_diarization', '0'),
+            ('speaker_diarization', '1' if diarize else '0'),
             ('filter_dirty', '0'),
             ('filter_modal', '0'),
             ('filter_punc', '0'),
@@ -626,12 +659,20 @@ def asr_transcribe_flash(cos_key):
         resp = requests.post(url, data=body, headers=headers, timeout=150)
         data = resp.json()
         if data.get('code', -1) != 0:
-            return None, '极速版 ASR 错误 code=%s msg=%s' % (data.get('code'), data.get('message'))
+            return None, [], '极速版 ASR 错误 code=%s msg=%s' % (data.get('code'), data.get('message'))
         result = data.get('flash_result') or []
         texts = [seg.get('text', '') for seg in result if seg.get('text')]
-        return '\n'.join(texts), None
+        segments = []
+        if diarize:
+            for seg in result:
+                for sent in (seg.get('sentence_list') or []):
+                    sid = sent.get('speaker_id')
+                    st = sent.get('text', '')
+                    if st:
+                        segments.append({'speaker_id': sid if sid is not None else -1, 'text': st})
+        return '\n'.join(texts), segments, None
     except Exception as e:  # noqa: BLE001
-        return None, '极速版调用异常: ' + str(e)
+        return None, [], '极速版调用异常: ' + str(e)
 
 
 # ------------------------- 实时语音识别 V2（WebSocket）签名 mint -------------------------
@@ -899,8 +940,12 @@ def asr_transcribe_route():
     engine = d.get('engine') or 'standard'
     if engine not in ('standard', 'flash'):
         engine = 'standard'
+    diarize = bool(d.get('diarize'))
+    # 面聊场景：说话人分离用极速版最稳（speaker_id 结构化返回），未显式指定引擎时默认 flash
+    if diarize and not d.get('engine'):
+        engine = 'flash'
     try:
-        text, err = asr_transcribe(key, engine_pref=engine)
+        text, segments, err = asr_transcribe(key, engine_pref=engine, diarize=diarize)
     except Exception as e:  # noqa: BLE001
         return jsonify({'code': 4, 'msg': 'ASR 处理异常: ' + str(e)}), 502
     # 清理临时音频，避免 COS 堆积
@@ -911,7 +956,7 @@ def asr_transcribe_route():
     if err:
         return jsonify({'code': 3, 'msg': err}), 502
     # 两步式：transcribe 只返回原文，纪要由 /api/asr/summarize 显式生成
-    return jsonify({'code': 0, 'text': text})
+    return jsonify({'code': 0, 'text': text, 'segments': segments or []})
 
 
 @app.route('/api/asr/summarize', methods=['POST', 'OPTIONS'])

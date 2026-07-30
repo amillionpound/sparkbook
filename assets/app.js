@@ -121,7 +121,7 @@
   // 点击弹层遮罩（卡片外区域）关闭弹层（编辑器除外——避免误触丢失未保存内容）
   document.querySelectorAll('.modal').forEach(m => {
     if (m.id === 'editor') return; // 编辑器只能通过「退出」/「保存」/✕ 关闭
-    m.addEventListener('click', e => { if (e.target === m) { if (m.id === 'recorder') asrOnRecorderClose(); if (m.id === 'facechat') faceStop(); if (m.id === 'voicememo') vmStopMic(); dismissModal('#' + m.id); } });
+    m.addEventListener('click', e => { if (e.target === m) { if (m.id === 'recorder') asrOnRecorderClose(); if (m.id === 'facechat') faceAbort(); if (m.id === 'voicememo') vmStopMic(); dismissModal('#' + m.id); } });
   });
 
   // ---------- 解锁 ----------
@@ -965,15 +965,17 @@
     }
     return { transcript: trans.join('\n').trim(), context: ctx.filter(Boolean).join('\n').trim() };
   }
-  async function transcribeAudio(key) {
+  async function transcribeAudio(key, opts) {
+    opts = opts || {};
     const body = { key, engine: store.settings().asrEngine };
+    if (opts.diarize) { body.diarize = true; delete body.engine; } // 说话人分离默认走极速版（后端决定）
     const r = await fetch(API_BASE + '/api/asr/transcribe', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     });
     const d = await r.json().catch(() => ({}));
     if (d.code !== 0) throw new Error(d.msg || ('code ' + d.code));
-    return { text: d.text || '' };
+    return { text: d.text || '', segments: d.segments || [] };
   }
   // 从 AI 纪要中提取「主题/议题」行，用于自动填充会议标题
   function extractTopic(summary) {
@@ -1385,7 +1387,7 @@
     $('#rec-save').onclick = recSave;
     // 面聊：实时多人转写
     $('#face-open-btn').onclick = openFacechat;
-    $('#face-close').onclick = () => { faceStop(); dismissModal('#facechat'); };
+    $('#face-close').onclick = () => { faceAbort(); dismissModal('#facechat'); };
     $('#face-start').onclick = faceStart;
     $('#face-stop').onclick = faceStop;
     $('#face-sum').onclick = faceSummarize;
@@ -1413,155 +1415,157 @@
     });
   }
 
-  // ============ 面聊：实时多人转写（WebSocket 实时识别 + 说话人分离） ============
-  // 走腾讯云实时语音识别 V2：浏览器经 SCF 签发的 wss 地址直连，麦克风 16k 单声道 PCM 分片发送，
-  // 服务端实时返回带 speaker_id 的字幕。开启 enable_speaker_context 后，复用同一 speaker_context_id
-  // 可在 24h 内保持说话人编号一致，配合前端手动打标实现「打一次、后续自动认人」。
+  // ============ 面聊：多人对话转写（录完再转：批量识别 + 说话人分离） ============
+  // 流程：麦克风录 16k 单声道 PCM → 结束时打包 WAV → 复用分片上传（/api/asr/upload）→
+  // /api/asr/transcribe(diarize=1) 批量识别返回带 speaker_id 的分段 → 打标 → AI 纪要 → 存会议。
+  // 走「录音文件识别极速版/标准版」免费额度，不依赖实时语音识别额度。
+  // 注意：批量模式说话人编号仅本次录音内有效（跨场次不保证一致），打标为本次会话生效。
   const SPK_LABELS = ['甲', '乙', '丙', '丁', '戊', '己', '庚', '辛', '壬', '癸'];
-  const FACE_CTX_KEY = 'sparkbook.faceCtx';
-  const FACE_NAMES_KEY = 'sparkbook.faceNames';
-  let faceWs = null, faceCtxId = '', faceMicStream = null, faceAudioCtx = null, faceScriptNode = null, faceSrcNode = null;
-  let faceMap = {}, faceFinal = false, faceStopped = false, faceSpkSet = new Set();
+  let faceMicStream = null, faceAudioCtx = null, faceScriptNode = null, faceSrcNode = null;
+  let faceChunks = [], faceRate = 16000, faceTimer = null, faceT0 = 0, faceRecording = false, faceBusy = false;
+  let faceSegs = [], faceNames = {}, faceSpkSet = new Set();
 
-  function spkLabel(id) { if (id == null || id < 0) return '识别中'; return SPK_LABELS[id] || ('说话人' + (id + 1)); }
-  function faceLoadCtx() { return localStorage.getItem(FACE_CTX_KEY) || ''; }
-  function faceSaveCtx(c) { if (c) localStorage.setItem(FACE_CTX_KEY, c); }
-  function faceLoadNames(ctx) { try { return (JSON.parse(localStorage.getItem(FACE_NAMES_KEY) || '{}')[ctx]) || {}; } catch (e) { return {}; } }
-  function faceSaveNames(ctx, map) {
-    let all = {}; try { all = JSON.parse(localStorage.getItem(FACE_NAMES_KEY) || '{}'); } catch (e) {}
-    all[ctx] = map; localStorage.setItem(FACE_NAMES_KEY, JSON.stringify(all));
-  }
+  function spkLabel(id) { if (id == null || id < 0) return '未知'; return SPK_LABELS[id] || ('说话人' + (id + 1)); }
   function faceResetUI() {
     $('#face-live').innerHTML = ''; $('#face-result').value = ''; $('#face-summary').value = '';
     $('#face-title').value = ''; $('#face-tags').classList.add('hidden'); $('#face-tags').innerHTML = '';
     $('#face-status').textContent = ''; $('#face-start').disabled = false; $('#face-stop').disabled = true;
-    $('#face-save').disabled = true; faceMap = {}; faceFinal = false; faceStopped = false; faceSpkSet = new Set();
+    $('#face-save').disabled = true;
+    faceChunks = []; faceSegs = []; faceNames = {}; faceSpkSet = new Set();
+    faceRecording = false; faceBusy = false;
   }
   function openFacechat() { faceResetUI(); openModal('#facechat'); }
 
   async function faceStart() {
+    if (faceRecording || faceBusy) return;
     $('#face-start').disabled = true; $('#face-stop').disabled = false;
-    $('#face-status').textContent = '正在请求麦克风并连接…';
+    $('#face-status').textContent = '正在请求麦克风…';
     try {
-      // 在用户手势内先取麦克风权限，避免异步后浏览器拦截
       faceMicStream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
     } catch (e) { toast('麦克风失败：' + (e.message || e)); $('#face-start').disabled = false; $('#face-stop').disabled = true; return; }
-    try {
-      const savedCtx = faceLoadCtx();
-      const r = await fetch(API_BASE + '/api/asr/rt-url', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ speaker_context_id: savedCtx }),
-      });
-      const d = await r.json().catch(() => ({}));
-      if (d.code !== 0) throw new Error(d.msg || ('code ' + (d.code)));
-      faceCtxId = d.speaker_context_id; faceSaveCtx(faceCtxId);
-      faceWs = new WebSocket(d.url);
-    } catch (e) { toast('连接失败：' + (e.message || e)); faceStopMic(); $('#face-start').disabled = false; $('#face-stop').disabled = true; return; }
-    faceWs.onopen = () => { faceBuildAudio(); };
-    faceWs.onmessage = ev => faceOnMessage(ev.data);
-    faceWs.onerror = () => { $('#face-status').textContent = '连接异常，请重试'; };
-    faceWs.onclose = () => { if (!faceStopped) { faceStopped = true; } faceFinalize(); };
-  }
-
-  async function faceBuildAudio() {
     const AC = window.AudioContext || window.webkitAudioContext;
     faceAudioCtx = new AC({ sampleRate: 16000 });
     await faceAudioCtx.resume();
+    faceRate = faceAudioCtx.sampleRate || 16000; // 个别浏览器不接受指定采样率，以实际为准写进 WAV 头
     faceSrcNode = faceAudioCtx.createMediaStreamSource(faceMicStream);
     faceScriptNode = faceAudioCtx.createScriptProcessor(4096, 1, 1);
+    faceChunks = [];
     faceScriptNode.onaudioprocess = e => {
-      if (!faceWs || faceWs.readyState !== 1) return;
       const inp = e.inputBuffer.getChannelData(0);
       const len = inp.length;
-      const buf = new ArrayBuffer(len * 2);
-      const view = new DataView(buf);
-      for (let i = 0; i < len; i++) { const s = Math.max(-1, Math.min(1, inp[i])); view.setInt16(i * 2, s < 0 ? s * 0x8000 : s * 0x7FFF, true); }
-      try { faceWs.send(buf); } catch (_) {}
+      const b = new Uint8Array(len * 2); const v = new DataView(b.buffer);
+      for (let i = 0; i < len; i++) { const s = Math.max(-1, Math.min(1, inp[i])); v.setInt16(i * 2, s < 0 ? s * 0x8000 : s * 0x7FFF, true); }
+      faceChunks.push(b);
     };
     faceSrcNode.connect(faceScriptNode);
     faceScriptNode.connect(faceAudioCtx.destination); // 必须连到 destination 才会触发 onaudioprocess
-    $('#face-status').textContent = '已连接，请开始说话…';
+    faceRecording = true; faceT0 = Date.now();
+    faceTimer = setInterval(() => {
+      const sec = Math.floor((Date.now() - faceT0) / 1000);
+      const mm = String(Math.floor(sec / 60)).padStart(2, '0'), ss = String(sec % 60).padStart(2, '0');
+      $('#face-status').textContent = '● 录音中 ' + mm + ':' + ss + '（结束后一次性转写，支持分人）';
+    }, 500);
+    $('#face-status').textContent = '● 录音中 00:00（结束后一次性转写，支持分人）';
   }
 
   function faceStopMic() {
+    if (faceTimer) { clearInterval(faceTimer); faceTimer = null; }
     if (faceMicStream) { faceMicStream.getTracks().forEach(t => t.stop()); faceMicStream = null; }
     try { if (faceScriptNode) faceScriptNode.disconnect(); } catch (_) {}
     try { if (faceSrcNode) faceSrcNode.disconnect(); } catch (_) {}
     try { if (faceAudioCtx) faceAudioCtx.close(); } catch (_) {}
     faceScriptNode = null; faceSrcNode = null; faceAudioCtx = null;
+    faceRecording = false;
   }
 
-  function faceStop() {
-    if (faceWs && faceWs.readyState === 1) { try { faceWs.send(JSON.stringify({ type: 'end' })); } catch (_) {} }
-    faceStopped = true;
-    $('#face-stop').disabled = true;
-    $('#face-status').textContent = '正在结束识别…';
+  // 关闭弹层/中途放弃：只停麦克风、丢弃音频，不触发转写
+  function faceAbort() {
     faceStopMic();
-    setTimeout(() => { if (!faceFinal) faceFinalize(); }, 1800);
+    faceChunks = [];
+    $('#face-start').disabled = false; $('#face-stop').disabled = true;
   }
 
-  function faceOnMessage(data) {
-    let m; try { m = JSON.parse(data); } catch (_) { return; }
-    if (m.code !== undefined && m.code !== 0) {
-      if (m.code === 4004) {
-        $('#face-status').textContent = '实时识别额度已耗尽（4004）：请在腾讯云「语音识别」控制台开通后付费或购买资源包；或改用「🎙 录音转写」录制后转写（同样支持说话人分离）。';
-        toast('实时识别额度耗尽（4004）');
-        return;
-      }
-      $('#face-status').textContent = '识别错误 code=' + m.code + ' ' + (m.message || '');
-      toast('识别错误：' + (m.message || m.code));
-      return;
+  function faceBuildWav() {
+    const total = faceChunks.reduce((a, b) => a + b.length, 0);
+    const wav = new Uint8Array(44 + total);
+    const dv = new DataView(wav.buffer);
+    const wstr = (off, s) => { for (let i = 0; i < s.length; i++) dv.setUint8(off + i, s.charCodeAt(i)); };
+    wstr(0, 'RIFF'); dv.setUint32(4, 36 + total, true); wstr(8, 'WAVE');
+    wstr(12, 'fmt '); dv.setUint32(16, 16, true); dv.setUint16(20, 1, true); dv.setUint16(22, 1, true);
+    dv.setUint32(24, faceRate, true); dv.setUint32(28, faceRate * 2, true); dv.setUint16(32, 2, true); dv.setUint16(34, 16, true);
+    wstr(36, 'data'); dv.setUint32(40, total, true);
+    let off = 44; for (const c of faceChunks) { wav.set(c, off); off += c.length; }
+    faceChunks = [];
+    return new File([wav.buffer], 'face-' + Date.now() + '.wav', { type: 'audio/wav' });
+  }
+
+  async function faceStop() {
+    if (!faceRecording || faceBusy) return;
+    faceBusy = true;
+    $('#face-stop').disabled = true;
+    faceStopMic();
+    const total = faceChunks.reduce((a, b) => a + b.length, 0);
+    if (total < faceRate) { // 不足 0.5 秒有效音频
+      $('#face-status').textContent = ''; toast('没有录到声音'); faceChunks = [];
+      $('#face-start').disabled = false; faceBusy = false; return;
     }
-    if (m.final === 1) { faceFinalize(); return; }
-    const s = m.sentences;
-    if (s && s.sentence !== undefined) { faceUpdateSentence(s); renderFaceLive(); }
+    const file = faceBuildWav();
+    try {
+      $('#face-status').textContent = '上传中…';
+      const key = await uploadAudio(file, (p, stage) => { $('#face-status').textContent = '云端' + stage + '…'; });
+      $('#face-status').textContent = '云端转写中（分离说话人，可能需 1-2 分钟）…';
+      const res = await transcribeAudio(key, { diarize: true });
+      asrClearSession(); // 面聊音频一次性使用，转写完即清会话，避免与「录音转写」断点互扰
+      faceSegs = faceMergeSegs(res.segments || []);
+      faceSpkSet = new Set(faceSegs.map(s => s.spk));
+      if (!faceSegs.length && res.text) {
+        // 引擎未返回分段（如回退标准版且解析失败）→ 退化为无说话人纯文本
+        $('#face-result').value = res.text;
+        $('#face-status').textContent = '识别完成（本次未能分离说话人，已输出纯文本）';
+      } else {
+        faceRenderResult();
+        $('#face-status').textContent = '识别完成，请核对并给说话人打标';
+      }
+      $('#face-save').disabled = !($('#face-result').value || '').trim();
+      faceRenderTags();
+    } catch (e) {
+      $('#face-status').textContent = '';
+      toast('转写失败：' + (e.message || e));
+    }
+    $('#face-start').disabled = false;
+    faceBusy = false;
   }
-  function faceUpdateSentence(s) {
-    const id = s.sentence_id; if (id == null) return;
-    const spk = (s.speaker_id == null ? -1 : s.speaker_id);
-    faceMap[id] = { spk, text: (s.sentence || ''), final: s.sentence_type === 1 };
-    if (faceMap[id].final) faceSpkSet.add(spk);
-  }
-  function renderFaceLive() {
-    const ids = Object.keys(faceMap).map(Number).sort((a, b) => a - b);
-    const names = faceLoadNames(faceCtxId);
-    const html = ids.map(id => {
-      const it = faceMap[id];
-      const lab = names[it.spk] || spkLabel(it.spk);
-      return '<div class="face-line' + (it.final ? '' : ' face-pending') + '"><b>' + esc(lab) + '</b>：' + esc(it.text) + (it.final ? '' : ' …') + '</div>';
-    }).join('');
-    const box = $('#face-live'); box.innerHTML = html; box.scrollTop = box.scrollHeight;
+
+  // 相邻同一说话人的句子合并成段，提升可读性
+  function faceMergeSegs(raw) {
+    const out = [];
+    for (const s of raw) {
+      const spk = (s.speaker_id == null ? -1 : s.speaker_id);
+      const txt = (s.text || '').trim();
+      if (!txt) continue;
+      if (out.length && out[out.length - 1].spk === spk) out[out.length - 1].text += txt;
+      else out.push({ spk, text: txt });
+    }
+    return out;
   }
   function faceBuildTranscript(namesMap) {
     namesMap = namesMap || {};
-    const ids = Object.keys(faceMap).map(Number).sort((a, b) => a - b);
-    const lines = [];
-    ids.forEach(id => {
-      const it = faceMap[id];
-      if (!it.final) return;
-      const lab = namesMap[it.spk] || spkLabel(it.spk);
-      lines.push('[' + lab + '] ' + it.text);
-    });
-    return lines.join('\n');
+    return faceSegs.map(it => '[' + (namesMap[it.spk] || spkLabel(it.spk)) + '] ' + it.text).join('\n');
   }
-  function faceFinalize() {
-    if (faceFinal) return; faceFinal = true;
-    $('#face-status').textContent = '识别结束，请核对并给说话人打标';
-    faceStopMic();
-    const transcript = faceBuildTranscript({});
-    $('#face-result').value = transcript;
-    $('#face-save').disabled = !transcript.trim();
-    faceRenderTags();
-    $('#face-start').disabled = false; $('#face-stop').disabled = true;
-    if (faceWs && faceWs.readyState === 1) { try { faceWs.close(); } catch (_) {} }
+  function faceRenderResult() {
+    const html = faceSegs.map(it => {
+      const lab = faceNames[it.spk] || spkLabel(it.spk);
+      return '<div class="face-line"><b>' + esc(lab) + '</b>：' + esc(it.text) + '</div>';
+    }).join('');
+    const box = $('#face-live'); box.innerHTML = html; box.scrollTop = 0;
+    $('#face-result').value = faceBuildTranscript(faceNames);
   }
   function faceRenderTags() {
-    const names = faceLoadNames(faceCtxId);
     const ids = [...faceSpkSet].sort((a, b) => a - b);
     if (!ids.length) { $('#face-tags').classList.add('hidden'); return; }
-    let html = '<label class="face-tags-label">说话人打标（把「' + spkLabel(ids[0]) + '」改为姓名，后续同圈子自动沿用）</label><div class="face-tags-row">';
+    let html = '<label class="face-tags-label">说话人打标（把「' + spkLabel(ids[0]) + '」等改成姓名，仅本次生效）</label><div class="face-tags-row">';
     ids.forEach(id => {
-      const def = names[id] || spkLabel(id);
+      const def = faceNames[id] || '';
       html += '<span class="face-tag">' + spkLabel(id) + ' → <input class="face-tag-input" data-spk="' + id + '" value="' + esc(def) + '" placeholder="姓名" /></span>';
     });
     html += '</div><button type="button" id="face-apply" class="btn btn-ghost">应用标记</button>';
@@ -1570,11 +1574,9 @@
   }
   function faceApplyTags() {
     const inputs = $('#face-tags').querySelectorAll('.face-tag-input');
-    const map = faceLoadNames(faceCtxId);
-    inputs.forEach(inp => { const v = inp.value.trim(); if (v) map[Number(inp.dataset.spk)] = v; });
-    faceSaveNames(faceCtxId, map);
-    $('#face-result').value = faceBuildTranscript(map);
-    toast('已标记并保存，下次同圈子面聊自动沿用');
+    inputs.forEach(inp => { const v = inp.value.trim(); if (v) faceNames[Number(inp.dataset.spk)] = v; });
+    faceRenderResult();
+    toast('已应用标记');
   }
   async function faceSummarize() {
     const { transcript, context } = splitTranscript($('#face-result').value);
