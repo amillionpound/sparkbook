@@ -7,16 +7,19 @@
   const TYPE_ORDER = window.SparkTypeOrder;
   // 与 store.js 同源，重复声明（store 内部常量未导出）
   const API_BASE = 'https://1256784020-0i70k3at89.ap-guangzhou.tencentscf.com';
-  // SCF 接口鉴权：与 SCF 环境变量 SPARKBOOK_API_TOKEN 保持一致（个人 app 的共享密钥，用于关闭开放端点）。
-  // 说明：该 token 内置于前端包，可挡住扫描/ opportunistic 滥用，但无法防"读源码提取"的定向攻击者——
-  // 对个人单机自用足够；若日后要对外共享，应改为用户级鉴权（首次运行输入 token 存 localStorage）。
+  // SCF 接口鉴权（零知识）：主凭证为「主密码派生的 vid」（SHA-256(主密码)，运行时算出、不在仓库，是真秘密）。
+  // 解锁后由 store 写入 window.__SB_VID__，fetch 包装据此发 Authorization: Bearer <vid>。
+  // API_TOKEN 仅作 dev 兜底（vid 未知时的备选）；正常解锁后用 vid 即无需 token。
+  // 该 token 写在公开仓库，只挡扫描/ opportunistic 滥用，无法防"读源码提取"的定向攻击者；
+  // 真正的保护来自 vid（密码派生）。SCF 上 SPARKBOOK_API_TOKEN 留空则强制纯 vid 模式。
   const API_TOKEN = 'sparkbook_e98876422956fdc80cbfe2621ab98f7ce4da740a453cd5e4c9760dbcbc5662cc';
   (function () {
     const _fetch = window.fetch.bind(window);
     window.fetch = function (url, opts) {
       opts = opts || {};
       if (typeof url === 'string' && url.indexOf(API_BASE) === 0) {
-        opts.headers = Object.assign({}, opts.headers || {}, { Authorization: 'Bearer ' + API_TOKEN });
+        const bearer = window.__SB_VID__ || API_TOKEN;
+        opts.headers = Object.assign({}, opts.headers || {}, { Authorization: 'Bearer ' + bearer });
       }
       return _fetch(url, opts);
     };

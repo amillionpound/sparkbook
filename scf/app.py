@@ -63,12 +63,39 @@ DEEPSEEK_URL = 'https://api.deepseek.com/v1/chat/completions'
 ASR_TEMP_PREFIX = 'asr-tmp/'
 
 
-# ------------------------- 可选鉴权 -------------------------
-def authorized():
-    if not API_TOKEN:
-        return True
+# ------------------------- 可选鉴权（零知识，密码派生 vid 为主凭证） -------------------------
+def authorized(require_vault=False):
+    """SCF 接口鉴权。
+
+    主凭证：浏览器端由主密码派生的 vid（SHA-256(主密码)，不在仓库，是真秘密）。
+      - require_vault=False（vault 路由）：bearer 为合法 64-hex vid 即放行（含首跑 bootstrap 建库）。
+      - require_vault=True（ASR/AI 等会烧额度的路由）：bearer 必须是「COS 中存在对应保险库对象」的 vid，
+        否则 401。攻击者猜不出合法 vid（256 位空间），随机串过不了 head_object 校验。
+    开发兜底：若设置了 SPARKBOOK_API_TOKEN，bearer 匹配它也放行（方便无库调试）。
+      注意：该 token 若写在公开仓库即失去保护作用，生产应留空强制纯 vid 模式。
+    """
     h = request.headers.get('Authorization', '')
-    return h.startswith('Bearer ') and hmac.compare_digest(h[7:], API_TOKEN)
+    if not h.startswith('Bearer '):
+        return False
+    bearer = h[7:]
+    # 开发兜底 token（可选；公开仓库场景下切勿依赖它做保护）
+    if API_TOKEN and hmac.compare_digest(bearer, API_TOKEN):
+        return True
+    # 主凭证：密码派生的 vid
+    if not require_vault:
+        return bool(bearer) and len(bearer) == 64 and all(c in '0123456789abcdef' for c in bearer)
+    return vid_has_vault(bearer)
+
+
+def vid_has_vault(vid):
+    # 对象能力校验：vid 是否对应一个真实存在的保险库对象。不读取内容，零知识边界不变。
+    if not vid or len(vid) != 64 or any(c not in '0123456789abcdef' for c in vid):
+        return False
+    try:
+        _cos_client().head_object(Bucket=COS_BUCKET, Key=VAULT_PREFIX + vid + '.enc')
+        return True
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def auth_fail():
@@ -108,7 +135,7 @@ def call_deepseek(messages, model='deepseek-chat', temperature=0.3,
 def api_ai():
     if request.method == 'OPTIONS':
         return ('', 204)
-    if not authorized():
+    if not authorized(require_vault=True):
         return auth_fail()
     d = request.get_json(force=True, silent=True) or {}
     action = d.get('action', 'generate')          # generate=写日报/纪要；evolve=风格进化
@@ -153,7 +180,7 @@ MINING_SYSTEM = (
 def api_mine():
     if request.method == 'OPTIONS':
         return ('', 204)
-    if not authorized():
+    if not authorized(require_vault=True):
         return auth_fail()
     d = request.get_json(force=True, silent=True) or {}
     texts = d.get('texts') or []
@@ -224,7 +251,7 @@ def cos_presign_url(method, key, expired=3600):
 def asr_presign():
     if request.method == 'OPTIONS':
         return ('', 204)
-    if not authorized():
+    if not authorized(require_vault=True):
         return auth_fail()
     if not (COS_SECRET_ID and COS_SECRET_KEY and COS_BUCKET):
         return jsonify({'code': 2, 'msg': 'SCF 未配置 COS 环境变量'}), 500
@@ -257,7 +284,7 @@ def asr_upload():
     """
     if request.method == 'OPTIONS':
         return ('', 204)
-    if not authorized():
+    if not authorized(require_vault=True):
         return auth_fail()
     if request.method == 'GET':
         # 断点续传：返回 COS 侧已存在的分块，前端据此跳过重传
@@ -409,7 +436,7 @@ VAULT_PREFIX = 'vaults/'
 def vault_presign():
     if request.method == 'OPTIONS':
         return ('', 204)
-    if not authorized():
+    if not authorized(require_vault=False):
         return auth_fail()
     if not (COS_SECRET_ID and COS_SECRET_KEY and COS_BUCKET):
         return jsonify({'code': 2, 'msg': 'SCF 未配置 COS 环境变量'}), 500
@@ -446,7 +473,7 @@ def _cos_get(key):
 def vault_save():
     if request.method == 'OPTIONS':
         return ('', 204)
-    if not authorized():
+    if not authorized(require_vault=False):
         return auth_fail()
     if not (COS_SECRET_ID and COS_SECRET_KEY and COS_BUCKET):
         return jsonify({'code': 2, 'msg': 'SCF 未配置 COS 环境变量'}), 500
@@ -468,7 +495,7 @@ def vault_save():
 def vault_load():
     if request.method == 'OPTIONS':
         return ('', 204)
-    if not authorized():
+    if not authorized(require_vault=False):
         return auth_fail()
     if not (COS_SECRET_ID and COS_SECRET_KEY and COS_BUCKET):
         return jsonify({'code': 2, 'msg': 'SCF 未配置 COS 环境变量'}), 500
@@ -727,7 +754,7 @@ def asr_rt_url_route():
     enable_speaker_context / speaker_context_id（跨会话一致性；不传则由服务端生成并返回）。"""
     if request.method == 'OPTIONS':
         return ('', 204)
-    if not authorized():
+    if not authorized(require_vault=True):
         return auth_fail()
     d = request.get_json(force=True, silent=True) or {}
     # 默认 16k_zh 标准引擎：吃「实时语音识别 5h/月」免费包。
@@ -755,7 +782,7 @@ def asr_sentence_route():
     """一句话识别（消耗 5000次/月 免费额度）：前端 WebAudio 采集 16k PCM，base64 直传，返回单句文本。"""
     if request.method == 'OPTIONS':
         return ('', 204)
-    if not authorized():
+    if not authorized(require_vault=True):
         return auth_fail()
     d = request.get_json(force=True, silent=True) or {}
     b64 = (d.get('data') or '').strip()
@@ -939,7 +966,7 @@ def summarize_meeting(raw_text, terms=None, context=None, profile=None, model='d
 def asr_transcribe_route():
     if request.method == 'OPTIONS':
         return ('', 204)
-    if not authorized():
+    if not authorized(require_vault=True):
         return auth_fail()
     d = request.get_json(force=True, silent=True) or {}
     key = d.get('key', '')
@@ -972,7 +999,7 @@ def asr_summarize_route():
     """对已转写的原文 + 用户#标注 提炼结构化纪要。"""
     if request.method == 'OPTIONS':
         return ('', 204)
-    if not authorized():
+    if not authorized(require_vault=True):
         return auth_fail()
     d = request.get_json(force=True, silent=True) or {}
     text = (d.get('text') or '').strip()

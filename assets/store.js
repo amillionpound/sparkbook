@@ -89,6 +89,8 @@
     async unlock(password, { remember = true } = {}) {
       const { vid } = await SparkCrypto.unlock(password);
       this.vid = vid;
+      // 让全局 fetch 包装用 vid 作主凭证（零知识：vid 由主密码派生，不在仓库）
+      window.__SB_VID__ = vid;
       const env = await this.loadEnvelope(vid);
       this.isNewVault = !env;
       let payload;
@@ -109,6 +111,11 @@
       this.key = key;
       this.state = payload;
       if (remember) await this._persistSession(password);
+      // 首跑 / 仅本地缓存的用户：确保 COS 上存在该 vid 的保险库对象，
+      // 否则后端 vid_has_vault 校验不通过，面聊/ASR 无法使用。
+      if (this.isNewVault || this.mode !== 'cos') {
+        try { await this.save(); } catch (_) {}
+      }
       return payload;
     }
 
@@ -125,6 +132,7 @@
 
     lock() {
       this.key = null; this.vid = null; this.state = null; this.saltB64 = null;
+      try { window.__SB_VID__ = null; } catch (_) {}
     }
 
     // ---- 存储适配器 ----
