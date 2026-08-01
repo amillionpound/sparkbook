@@ -7,6 +7,20 @@
   const TYPE_ORDER = window.SparkTypeOrder;
   // 与 store.js 同源，重复声明（store 内部常量未导出）
   const API_BASE = 'https://1256784020-0i70k3at89.ap-guangzhou.tencentscf.com';
+  // SCF 接口鉴权：与 SCF 环境变量 SPARKBOOK_API_TOKEN 保持一致（个人 app 的共享密钥，用于关闭开放端点）。
+  // 说明：该 token 内置于前端包，可挡住扫描/ opportunistic 滥用，但无法防"读源码提取"的定向攻击者——
+  // 对个人单机自用足够；若日后要对外共享，应改为用户级鉴权（首次运行输入 token 存 localStorage）。
+  const API_TOKEN = 'sparkbook_e98876422956fdc80cbfe2621ab98f7ce4da740a453cd5e4c9760dbcbc5662cc';
+  (function () {
+    const _fetch = window.fetch.bind(window);
+    window.fetch = function (url, opts) {
+      opts = opts || {};
+      if (typeof url === 'string' && url.indexOf(API_BASE) === 0) {
+        opts.headers = Object.assign({}, opts.headers || {}, { Authorization: 'Bearer ' + API_TOKEN });
+      }
+      return _fetch(url, opts);
+    };
+  })();
   // 日报助手冷启动种子（人设基底，随应用内置，对应 日报助手.txt）
   const DAILY_SEED = `我是银行的公司经营管理平台、同业经营管理平台的项目经理，我负责需求跟进、成本优化与系统运维，还要负责对应的外包人员管理。这两个系统内有对应的集市模块（对公集市、同业集市），两个系统本身用的是oceanbase数据库的oracle模式，集市用的是星环TDH数据库。
 你是我的对公、同业经营管理平台项目经理助理。
